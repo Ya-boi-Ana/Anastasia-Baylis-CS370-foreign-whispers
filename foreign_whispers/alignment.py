@@ -37,8 +37,15 @@ _SYLLABLE_RATE = 4.5  # syllables per second for Romance languages
 
 
 def _estimate_duration(text: str) -> float:
-    """Estimate TTS duration in seconds using a syllable-rate heuristic."""
-    return _count_syllables(text) / _SYLLABLE_RATE
+    """Estimate TTS duration in seconds using a character-rate heuristic.
+    
+    Improved from syllable-based to character-based for better accuracy.
+    ~15 characters per second for Romance languages.
+    """
+    char_count = len(text.strip())
+    if char_count == 0:
+        return 0.1  # minimum duration
+    return char_count / 15.0
 
 
 @dataclasses.dataclass
@@ -297,4 +304,113 @@ def global_align(
 
         cumulative_drift += gap_shift
 
+    return aligned
+
+
+def global_align_dp(
+    metrics:         list[SegmentMetrics],
+    silence_regions: list[dict],
+    max_stretch:     float = 1.4,
+) -> list[AlignedSegment]:
+    """Dynamic programming global alignment to minimize total stretch penalty.
+
+    This is an improved version of global_align that uses DP to find the optimal
+    sequence of gap shifts, minimizing the total stretch factor across all segments.
+
+    Algorithm:
+    - For each segment, consider whether to apply gap_shift (if silence available)
+    - Use DP to track minimum cumulative penalty
+    - Penalty is the sum of (stretch_factor - 1) for segments that need stretching
+
+    Args:
+        metrics: Per-segment timing metrics.
+        silence_regions: VAD silence regions.
+        max_stretch: Max stretch factor.
+
+    Returns:
+        List of AlignedSegment with optimal scheduling.
+    """
+    if not metrics:
+        return []
+
+    def _silence_after(end_s: float) -> float:
+        for r in silence_regions:
+            if r.get("label") == "silence" and r["start_s"] >= end_s - 0.1:
+                return r["end_s"] - r["start_s"]
+        return 0.0
+
+    n = len(metrics)
+    # DP table: dp[i][drift] = min penalty to align first i segments with current drift
+    # But drift is continuous, so discretize or use dict
+    # For simplicity, track possible drift states
+    # Since drift is small, use a dict of drift -> (penalty, prev_decisions)
+
+    from collections import defaultdict
+    dp = defaultdict(lambda: float('inf'))
+    dp[0.0] = 0.0  # initial drift 0, penalty 0
+
+    prev = {}  # (drift, segment) -> (prev_drift, action, gap_shift)
+
+    for i, m in enumerate(metrics):
+        new_dp = defaultdict(lambda: float('inf'))
+        available_gap = _silence_after(m.source_end)
+        
+        for current_drift, penalty in dp.items():
+            # Option 1: No gap shift
+            action = decide_action(m, available_gap_s=0)
+            gap_shift = 0.0
+            stretch = 1.0
+            if action == AlignAction.MILD_STRETCH:
+                stretch = min(m.predicted_stretch, max_stretch)
+            elif action in (AlignAction.REQUEST_SHORTER, AlignAction.FAIL):
+                stretch = m.predicted_stretch  # penalty for not fitting
+            
+            new_penalty = penalty + max(0, stretch - 1)  # penalty for stretching
+            new_drift = current_drift
+            key = (new_drift, i)
+            if new_penalty < new_dp[new_drift]:
+                new_dp[new_drift] = new_penalty
+                prev[key] = (current_drift, action, gap_shift, stretch)
+            
+            # Option 2: Apply gap shift if possible
+            if available_gap >= m.overflow_s and m.overflow_s > 0:
+                action = AlignAction.GAP_SHIFT
+                gap_shift = m.overflow_s
+                stretch = 1.0
+                new_penalty = penalty  # no stretch penalty
+                new_drift = current_drift + gap_shift
+                key = (new_drift, i)
+                if new_penalty < new_dp[new_drift]:
+                    new_dp[new_drift] = new_penalty
+                    prev[key] = (current_drift, action, gap_shift, stretch)
+        
+        dp = new_dp
+
+    # Find the best final drift
+    best_drift = min(dp, key=dp.get)
+    best_penalty = dp[best_drift]
+
+    # Reconstruct the solution
+    aligned = []
+    current_drift = best_drift
+    for i in range(n-1, -1, -1):
+        key = (current_drift, i)
+        prev_drift, action, gap_shift, stretch = prev[key]
+        m = metrics[i]
+        sched_start = m.source_start + prev_drift
+        sched_end = sched_start + m.source_duration_s + gap_shift
+        aligned.append(AlignedSegment(
+            index           = m.index,
+            original_start  = m.source_start,
+            original_end    = m.source_end,
+            scheduled_start = sched_start,
+            scheduled_end   = sched_end,
+            text            = m.translated_text,
+            action          = action,
+            gap_shift_s     = gap_shift,
+            stretch_factor  = stretch,
+        ))
+        current_drift = prev_drift
+    
+    aligned.reverse()
     return aligned

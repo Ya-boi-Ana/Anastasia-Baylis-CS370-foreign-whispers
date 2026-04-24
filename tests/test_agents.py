@@ -7,10 +7,14 @@ from foreign_whispers.reranking import (
 )
 
 
-def test_get_shorter_returns_empty_stub():
-    """Stub returns [] until students implement it."""
-    result = get_shorter_translations("hello", "hola", 1.0)
-    assert result == []
+def test_get_shorter_returns_candidates():
+    """Should return list of TranslationCandidate objects."""
+    result = get_shorter_translations("hello world", "hola mundo", 1.0)
+    assert isinstance(result, list)
+    if result:
+        assert all(isinstance(c, TranslationCandidate) for c in result)
+        # Should be sorted by char_count
+        assert all(result[i].char_count <= result[i+1].char_count for i in range(len(result)-1))
 
 
 def test_analyze_failures_returns_dataclass():

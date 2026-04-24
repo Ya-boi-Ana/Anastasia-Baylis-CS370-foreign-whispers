@@ -157,10 +157,57 @@ def get_shorter_translations(
     Returns:
         Empty list (stub).  Implement to return ``TranslationCandidate`` items.
     """
+    # Simple rule-based shortening implementation
+    target_chars = int(target_duration_s * 15)  # ~15 chars/second heuristic
+    baseline_chars = len(baseline_es)
+    
+    if baseline_chars <= target_chars:
+        # Already fits, return as is
+        return [TranslationCandidate(
+            text=baseline_es,
+            char_count=baseline_chars,
+            brevity_rationale="Already fits duration budget"
+        )]
+    
+    candidates = []
+    
+    # Candidate 1: Truncate to target length
+    truncated = baseline_es[:target_chars].strip()
+    if truncated:
+        candidates.append(TranslationCandidate(
+            text=truncated,
+            char_count=len(truncated),
+            brevity_rationale="Truncated to fit duration"
+        ))
+    
+    # Candidate 2: Remove filler words (simple approach)
+    filler_words = ["que", "de", "la", "el", "en", "y", "a", "los", "las", "un", "una", "es"]
+    words = baseline_es.split()
+    shortened_words = [w for w in words if w.lower() not in filler_words]
+    shortened = " ".join(shortened_words)
+    if len(shortened) < baseline_chars and shortened:
+        candidates.append(TranslationCandidate(
+            text=shortened,
+            char_count=len(shortened),
+            brevity_rationale="Removed filler words"
+        ))
+    
+    # Candidate 3: Use first half if too long
+    if len(words) > 5:
+        half = " ".join(words[:len(words)//2])
+        candidates.append(TranslationCandidate(
+            text=half,
+            char_count=len(half),
+            brevity_rationale="Used first half of text"
+        ))
+    
+    # Sort by char_count ascending
+    candidates.sort(key=lambda c: c.char_count)
+    
     logger.info(
-        "get_shorter_translations called for %.1fs budget (%d chars baseline) — "
-        "returning empty list (student assignment stub).",
+        "get_shorter_translations generated %d candidates for %.1fs budget (%d chars baseline)",
+        len(candidates),
         target_duration_s,
-        len(baseline_es),
+        baseline_chars,
     )
-    return []
+    return candidates
