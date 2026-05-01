@@ -61,6 +61,67 @@ def test_synced_segment_clamp_applied(monkeypatch):
         assert sf_val >= 0.85 - 1e-9  # also within lower bound
 
 
+def test_baseline_mode_does_not_slow_short_tts(monkeypatch):
+    """Baseline mode should pad short TTS audio instead of stretching it slower."""
+    import numpy as np
+    import soundfile as sf
+    from api.src.services.tts_engine import _postprocess_segment
+
+    sr = 22050
+    monkeypatch.setattr(
+        "api.src.services.tts_engine.pyrubberband.time_stretch",
+        lambda y, sr, speed: y,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        raw_wav = pathlib.Path(tmpdir) / "source_1s.wav"
+        sf.write(str(raw_wav), np.zeros(sr, dtype=np.float32), sr)
+
+        audio, speed_factor, raw_duration = _postprocess_segment(
+            raw_wav.read_bytes(),
+            target_sec=3.0,
+            stretch_factor=1.0,
+            alignment_enabled=False,
+            work_dir=tmpdir,
+        )
+
+        assert audio is not None
+        assert speed_factor == pytest.approx(1.0, abs=0.01)
+        assert raw_duration == pytest.approx(1.0, abs=0.01)
+        assert len(audio) == pytest.approx(3000, abs=50)
+
+
+def test_effective_segment_end_clamps_overlap():
+    """TTS timing should use the next start when caption windows overlap."""
+    from api.src.services.tts_engine import _clean_tts_text, _effective_segment_end
+
+    segments = [
+        {"start": 0.0, "end": 3.0, "text": "> Hola"},
+        {"start": 1.5, "end": 4.0, "text": "Mundo"},
+    ]
+
+    assert _effective_segment_end(segments, 0) == pytest.approx(1.5)
+    assert _effective_segment_end(segments, 1) == pytest.approx(4.0)
+    assert _clean_tts_text("> Hola") == "Hola"
+
+
+def test_group_segment_metas_combines_fragments_until_sentence_end():
+    """Adjacent fragments should synthesize as one phrase for smoother prosody."""
+    from api.src.services.tts_engine import _group_segment_metas
+
+    metas = [
+        {"index": 0, "start": 0.0, "end": 1.0, "target_sec": 1.0, "text": "Hola", "speaker": None},
+        {"index": 1, "start": 1.0, "end": 2.0, "target_sec": 1.0, "text": "mundo.", "speaker": None},
+    ]
+
+    groups = _group_segment_metas(metas)
+
+    assert len(groups) == 1
+    assert groups[0]["text"] == "Hola mundo."
+    assert groups[0]["source_indices"] == [0, 1]
+    assert groups[0]["target_sec"] == pytest.approx(2.0)
+
+
 def test_text_file_to_speech_calls_alignment(tmp_path):
     """text_file_to_speech calls _build_alignment and passes its stretch_factor."""
     from api.src.services.tts_engine import text_file_to_speech

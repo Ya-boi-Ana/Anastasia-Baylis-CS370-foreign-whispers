@@ -7,6 +7,7 @@ SegmentMetrics.  The translation re-ranking function is a **student assignment**
 
 import dataclasses
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -103,111 +104,112 @@ def get_shorter_translations(
     context_prev: str = "",
     context_next: str = "",
 ) -> list[TranslationCandidate]:
-    """Return shorter translation candidates that fit *target_duration_s*.
+    """Return concise Spanish translation candidates for a duration budget.
 
-    .. admonition:: Student Assignment — Duration-Aware Translation Re-ranking
-
-       This function is intentionally a **stub that returns an empty list**.
-       Your task is to implement a strategy that produces shorter
-       target-language translations when the baseline translation is too long
-       for the time budget.
-
-       **Inputs**
-
-       ============== ======== ==================================================
-       Parameter      Type     Description
-       ============== ======== ==================================================
-       source_text    str      Original source-language segment text
-       baseline_es    str      Baseline target-language translation (from argostranslate)
-       target_duration_s float Time budget in seconds for this segment
-       context_prev   str      Text of the preceding segment (for coherence)
-       context_next   str      Text of the following segment (for coherence)
-       ============== ======== ==================================================
-
-       **Outputs**
-
-       A list of ``TranslationCandidate`` objects, sorted shortest first.
-       Each candidate has:
-
-       - ``text``: the shortened target-language translation
-       - ``char_count``: ``len(text)``
-       - ``brevity_rationale``: short note on what was changed
-
-       **Duration heuristic**: target-language TTS produces ~15 characters/second
-       (or ~4.5 syllables/second for Romance languages).  So a 3-second budget
-       ≈ 45 characters.
-
-       **Approaches to consider** (pick one or combine):
-
-       1. **Rule-based shortening** — strip filler words, use shorter synonyms
-          from a lookup table, contract common phrases
-          (e.g. "en este momento" → "ahora").
-       2. **Multiple translation backends** — call argostranslate with
-          paraphrased input, or use a second translation model, then pick
-          the shortest output that preserves meaning.
-       3. **LLM re-ranking** — use an LLM (e.g. via an API) to generate
-          condensed alternatives.  This was the previous approach but adds
-          latency, cost, and a runtime dependency.
-       4. **Hybrid** — rule-based first, fall back to LLM only for segments
-          that still exceed the budget.
-
-       **Evaluation criteria**: the caller selects the candidate whose
-       ``len(text) / 15.0`` is closest to ``target_duration_s``.
-
-    Returns:
-        Empty list (stub).  Implement to return ``TranslationCandidate`` items.
+    The implementation is local and deterministic: normalize caption markers,
+    contract verbose phrases, remove discourse fillers, then fall back to a
+    word-boundary trim only if every semantic-preserving candidate is still too
+    long.  Candidates closest to the target budget are returned first.
     """
-    # Simple rule-based shortening implementation
-    target_chars = int(target_duration_s * 15)  # ~15 chars/second heuristic
-    baseline_chars = len(baseline_es)
-    
-    if baseline_chars <= target_chars:
-        # Already fits, return as is
-        return [TranslationCandidate(
-            text=baseline_es,
-            char_count=baseline_chars,
-            brevity_rationale="Already fits duration budget"
-        )]
-    
-    candidates = []
-    
-    # Candidate 1: Truncate to target length
-    truncated = baseline_es[:target_chars].strip()
-    if truncated:
-        candidates.append(TranslationCandidate(
-            text=truncated,
-            char_count=len(truncated),
-            brevity_rationale="Truncated to fit duration"
-        ))
-    
-    # Candidate 2: Remove filler words (simple approach)
-    filler_words = ["que", "de", "la", "el", "en", "y", "a", "los", "las", "un", "una", "es"]
-    words = baseline_es.split()
-    shortened_words = [w for w in words if w.lower() not in filler_words]
-    shortened = " ".join(shortened_words)
-    if len(shortened) < baseline_chars and shortened:
-        candidates.append(TranslationCandidate(
-            text=shortened,
-            char_count=len(shortened),
-            brevity_rationale="Removed filler words"
-        ))
-    
-    # Candidate 3: Use first half if too long
-    if len(words) > 5:
-        half = " ".join(words[:len(words)//2])
-        candidates.append(TranslationCandidate(
-            text=half,
-            char_count=len(half),
-            brevity_rationale="Used first half of text"
-        ))
-    
-    # Sort by char_count ascending
-    candidates.sort(key=lambda c: c.char_count)
-    
+    target_chars = max(8, int(target_duration_s * 15))
+    baseline = _normalize_caption_text(baseline_es)
+    candidates: list[TranslationCandidate] = []
+
+    def add(text: str, rationale: str) -> None:
+        text = _normalize_caption_text(text)
+        if text and not any(c.text == text for c in candidates):
+            candidates.append(TranslationCandidate(text, len(text), rationale))
+
+    add(baseline, "Normalized caption text")
+    contracted = _apply_contractions(baseline)
+    add(contracted, "Applied concise Spanish phrasing")
+    filler_light = _drop_discourse_fillers(contracted)
+    add(filler_light, "Removed discourse fillers")
+    compressed = _drop_low_information_phrases(filler_light)
+    add(compressed, "Removed low-information phrases")
+
+    if all(c.char_count > target_chars for c in candidates):
+        add(_word_boundary_trim(compressed, target_chars), "Trimmed at word boundary as last resort")
+
+    candidates.sort(key=lambda c: (c.char_count > target_chars, abs(c.char_count - target_chars), c.char_count))
+
     logger.info(
         "get_shorter_translations generated %d candidates for %.1fs budget (%d chars baseline)",
         len(candidates),
         target_duration_s,
-        baseline_chars,
+        len(baseline),
     )
     return candidates
+
+
+_CONTRACTIONS = {
+    "en este momento": "ahora",
+    "en este punto": "ahora",
+    "en la actualidad": "ahora",
+    "por lo tanto": "así que",
+    "debido a": "por",
+    "con el fin de": "para",
+    "a través de": "por",
+    "una cantidad significativa de": "mucho",
+    "el resto del mundo": "el mundo",
+    "en otras palabras": "o sea",
+    "en cierta medida": "algo",
+}
+
+_DISCOURSE_FILLERS = {
+    "bueno",
+    "pues",
+    "eh",
+    "em",
+    "um",
+    "este",
+    "entonces",
+    "básicamente",
+    "realmente",
+}
+
+_LOW_INFORMATION_PHRASES = [
+    r"\bcomo resultado,?\s*",
+    r"\bno es que\s+",
+    r"\bla realidad es\s+",
+]
+
+
+def _normalize_caption_text(text: str) -> str:
+    text = re.sub(r"^\s*(?:>+|&gt;+)\s*", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _apply_contractions(text: str) -> str:
+    result = text
+    for verbose, concise in _CONTRACTIONS.items():
+        result = re.sub(rf"\b{re.escape(verbose)}\b", concise, result, flags=re.IGNORECASE)
+    return result
+
+
+def _drop_discourse_fillers(text: str) -> str:
+    kept = []
+    for word in text.split():
+        normalized = re.sub(r"^[^\wáéíóúüñÁÉÍÓÚÜÑ]+|[^\wáéíóúüñÁÉÍÓÚÜÑ]+$", "", word).lower()
+        if normalized not in _DISCOURSE_FILLERS:
+            kept.append(word)
+    return " ".join(kept)
+
+
+def _drop_low_information_phrases(text: str) -> str:
+    result = text
+    for pattern in _LOW_INFORMATION_PHRASES:
+        result = re.sub(pattern, "", result, flags=re.IGNORECASE)
+    return result
+
+
+def _word_boundary_trim(text: str, target_chars: int) -> str:
+    if len(text) <= target_chars:
+        return text
+    kept: list[str] = []
+    for word in text.split():
+        candidate = " ".join([*kept, word])
+        if len(candidate) > target_chars:
+            break
+        kept.append(word)
+    return " ".join(kept) or text[:target_chars].rstrip()

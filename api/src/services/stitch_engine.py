@@ -26,11 +26,28 @@ def _imagemagick_binary() -> str | None:
     if env_path and os.path.isfile(env_path):
         return env_path
     # Fall back to PATH discovery
-    for name in ("convert", "magick"):
+    for name in ("magick", "convert"):
         path = shutil.which(name)
-        if path:
+        if path and _is_imagemagick_binary(path):
             return path
     return None
+
+
+def _is_imagemagick_binary(path: str) -> bool:
+    """Return True only for ImageMagick, not Windows' convert.exe."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False
+    output = f"{result.stdout}\n{result.stderr}"
+    return result.returncode == 0 and "imagemagick" in output.lower()
 
 
 _im_bin = _imagemagick_binary()

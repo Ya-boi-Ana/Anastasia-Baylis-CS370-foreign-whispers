@@ -15,33 +15,32 @@ from api.src.services.stitch_service import StitchService
 router = APIRouter(prefix="/api")
 
 _stitch_service = StitchService(ui_dir=settings.data_dir)
+_CAPTION_HEADERS = {"Cache-Control": "no-store"}
 
 
 def _segments_to_vtt(segments: list[dict]) -> str:
-    """Convert transcript segments to rolling two-line WebVTT format.
-
-    Mimics Google-style captions: each cue shows the current line on top
-    and the previous line on the bottom, creating a smooth reading bridge.
-    """
+    """Convert transcript segments to single-line WebVTT cues."""
     # Filter to non-empty segments first
     segs = [s for s in segments if s.get("text", "").strip()]
     if not segs:
         return "WEBVTT\n"
 
     lines = ["WEBVTT", ""]
-    prev_text: str | None = None
     for i, seg in enumerate(segs, 1):
-        start = _format_vtt_time(seg["start"])
-        end = _format_vtt_time(seg["end"])
+        start_s = float(seg["start"])
+        end_s = float(seg["end"])
+        if i < len(segs):
+            next_start_s = float(segs[i]["start"])
+            if start_s < next_start_s < end_s:
+                end_s = next_start_s
+
+        start = _format_vtt_time(start_s)
+        end = _format_vtt_time(end_s)
         text = seg.get("text", "").strip()
         lines.append(str(i))
         lines.append(f"{start} --> {end}")
-        if prev_text:
-            lines.append(f"{text}\n{prev_text}")
-        else:
-            lines.append(text)
+        lines.append(text)
         lines.append("")
-        prev_text = text
     return "\n".join(lines)
 
 
@@ -63,7 +62,7 @@ def _serve_captions(vtt_dir: pathlib.Path, json_fallback_dir: pathlib.Path, vide
 
     # Serve existing VTT file directly
     if vtt_path.exists():
-        return PlainTextResponse(vtt_path.read_text(), media_type="text/vtt")
+        return PlainTextResponse(vtt_path.read_text(), media_type="text/vtt", headers=_CAPTION_HEADERS)
 
     # Fallback: generate VTT from transcript JSON
     json_path = json_fallback_dir / f"{title}.json"
@@ -77,7 +76,7 @@ def _serve_captions(vtt_dir: pathlib.Path, json_fallback_dir: pathlib.Path, vide
     # Persist so we don't regenerate next time
     vtt_dir.mkdir(parents=True, exist_ok=True)
     vtt_path.write_text(vtt)
-    return PlainTextResponse(vtt, media_type="text/vtt")
+    return PlainTextResponse(vtt, media_type="text/vtt", headers=_CAPTION_HEADERS)
 
 
 def _compute_speech_offset(title: str) -> float:
@@ -119,9 +118,6 @@ async def get_captions(video_id: str):
     vtt_dir = settings.dubbed_captions_dir
     vtt_path = vtt_dir / f"{title}.vtt"
 
-    if vtt_path.exists():
-        return PlainTextResponse(vtt_path.read_text(), media_type="text/vtt")
-
     json_path = settings.translations_dir / f"{title}.json"
     if not json_path.exists():
         raise HTTPException(status_code=404, detail="Translated captions not found")
@@ -139,15 +135,15 @@ async def get_captions(video_id: str):
 
     vtt = _segments_to_vtt(segments)
     vtt_dir.mkdir(parents=True, exist_ok=True)
+    # Always rewrite so old rolling two-line caption caches are upgraded.
     vtt_path.write_text(vtt)
-    return PlainTextResponse(vtt, media_type="text/vtt")
+    return PlainTextResponse(vtt, media_type="text/vtt", headers=_CAPTION_HEADERS)
 
 
 def _youtube_captions_to_vtt(caption_path: pathlib.Path) -> str:
-    """Convert YouTube line-delimited JSON captions to rolling two-line WebVTT.
+    """Convert YouTube line-delimited JSON captions to single-line WebVTT.
 
     YouTube format: {"text": "...", "start": float, "duration": float} per line.
-    Uses the same rolling bridge style as _segments_to_vtt.
     """
     # Parse and filter valid segments first
     segs: list[tuple[float, float, str]] = []
@@ -166,16 +162,11 @@ def _youtube_captions_to_vtt(caption_path: pathlib.Path) -> str:
         return "WEBVTT\n"
 
     lines_out = ["WEBVTT", ""]
-    prev_text: str | None = None
     for i, (start, end, text) in enumerate(segs, 1):
         lines_out.append(str(i))
         lines_out.append(f"{_format_vtt_time(start)} --> {_format_vtt_time(end)}")
-        if prev_text:
-            lines_out.append(f"{text}\n{prev_text}")
-        else:
-            lines_out.append(text)
+        lines_out.append(text)
         lines_out.append("")
-        prev_text = text
     return "\n".join(lines_out)
 
 
@@ -193,7 +184,7 @@ async def get_original_captions(video_id: str):
     yt_caption_path = settings.youtube_captions_dir / f"{title}.txt"
     if yt_caption_path.exists():
         vtt = _youtube_captions_to_vtt(yt_caption_path)
-        return PlainTextResponse(vtt, media_type="text/vtt")
+        return PlainTextResponse(vtt, media_type="text/vtt", headers=_CAPTION_HEADERS)
 
     # 2. Fall back to Whisper transcription
     whisper_path = settings.transcriptions_dir / f"{title}.json"
@@ -201,7 +192,7 @@ async def get_original_captions(video_id: str):
         raise HTTPException(status_code=404, detail="No captions available")
     data = json.loads(whisper_path.read_text())
     return PlainTextResponse(
-        _segments_to_vtt(data.get("segments", [])), media_type="text/vtt",
+        _segments_to_vtt(data.get("segments", [])), media_type="text/vtt", headers=_CAPTION_HEADERS,
     )
 
 
@@ -222,14 +213,15 @@ async def stitch_endpoint(
     if title is None:
         raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
 
+    audio_path = settings.tts_audio_dir / config / f"{title}.wav"
     output_path = output_dir / f"{title}.mp4"
 
     if output_path.exists():
-        return {"video_id": video_id, "video_path": str(output_path), "config": config}
+        audio_is_newer = audio_path.exists() and audio_path.stat().st_mtime > output_path.stat().st_mtime
+        if not audio_is_newer:
+            return {"video_id": video_id, "video_path": str(output_path), "config": config}
 
     video_path = str(videos_dir / f"{title}.mp4")
-
-    audio_path = settings.tts_audio_dir / config / f"{title}.wav"
 
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(
@@ -300,7 +292,11 @@ async def get_video(
 
     video_path = settings.dubbed_videos_dir / config / f"{title}.mp4"
     if not video_path.exists():
-        raise HTTPException(status_code=404, detail="Dubbed video not yet generated")
+        legacy_path = settings.dubbed_videos_dir / f"{title}.mp4"
+        if legacy_path.exists():
+            video_path = legacy_path
+        else:
+            raise HTTPException(status_code=404, detail="Dubbed video not yet generated")
 
     return _serve_video(video_path, request)
 

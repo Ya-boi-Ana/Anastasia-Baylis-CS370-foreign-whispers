@@ -17,10 +17,12 @@ import {
   stitchVideo,
 } from "@/lib/api";
 import { computeConfigEntries, type ConfigEntry } from "@/lib/config-id";
+import { diarizeVideo } from "@/lib/api";
 
 const STAGES: PipelineStage[] = [
   "download",
   "transcribe",
+  "diarize",
   "translate",
   "tts",
   "stitch",
@@ -192,6 +194,19 @@ export function usePipeline() {
     try {
       const dl = await run("download", () => downloadVideo(video.url));
       await run("transcribe", () => transcribeVideo(dl.video_id, settings.useYoutubeCaptions));
+
+      if (settings.diarization.length > 0) {
+        await run("diarize", () => diarizeVideo(dl.video_id));
+      } else {
+        dispatch({
+          type: "STAGE_COMPLETE",
+          stage: "diarize",
+          result: undefined,
+          duration_ms: 0,
+          skipped: true,
+        });
+      }
+
       await run("translate", () => translateVideo(dl.video_id, "es"));
 
       // Run TTS + stitch for each config entry.
@@ -199,7 +214,8 @@ export function usePipeline() {
       for (const cfg of configs) {
         dispatch({ type: "SELECT_VARIANT", variantId: makeVariantId(video.id, cfg.id) });
         const alignment = cfg.dubbing === "aligned";
-        await run("tts", () => synthesizeSpeech(dl.video_id, cfg.id, alignment));
+        const voiceCloning = cfg.voiceCloning === "chatterbox";
+        await run("tts", () => synthesizeSpeech(dl.video_id, cfg.id, alignment, voiceCloning));
         await run("stitch", () => stitchVideo(dl.video_id, cfg.id));
       }
 

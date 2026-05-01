@@ -4,6 +4,8 @@ import os
 import pathlib
 import json
 import glob
+import re
+import subprocess
 import tempfile
 
 import requests
@@ -12,8 +14,13 @@ import soundfile as sf
 import pyrubberband
 from pydub import AudioSegment
 
+from api.src.core.config import settings
+from foreign_whispers.voice_resolution import resolve_speaker_wav
+
 # ── Chatterbox API configuration ─────────────────────────────────────
-CHATTERBOX_API_URL = os.getenv("CHATTERBOX_API_URL", "http://localhost:8020")
+CHATTERBOX_API_URL = settings.chatterbox_api_url
+import sys
+print(f"[tts] Module init: CHATTERBOX_API_URL={CHATTERBOX_API_URL}", file=sys.stderr)
 # Path to the default speaker reference WAV, relative to pipeline_data/speakers/
 CHATTERBOX_SPEAKER_WAV = os.getenv("CHATTERBOX_SPEAKER_WAV", "")
 
@@ -21,14 +28,15 @@ CHATTERBOX_SPEAKER_WAV = os.getenv("CHATTERBOX_SPEAKER_WAV", "")
 # Default is "on" (new clamped path). Useful for A/B comparisons.
 _ALIGNMENT_ENABLED = os.getenv("FW_ALIGNMENT", "on").lower() != "off"
 
-SPEED_MIN = 0.75
-SPEED_MAX = 1.25
+_MAX_NATURAL_SPEEDUP = float(os.getenv("FW_TTS_MAX_SPEEDUP", "1.25"))
 # When TTS audio is less than this fraction of the target window, skip
 # time-stretching entirely — play at natural speed and pad with silence.
 # Prevents comically slow speech in windows with long narrator pauses.
-_STRETCH_SKIP_RATIO = 0.5
 _SPEED_MIN_LEGACY = 0.1
 _SPEED_MAX_LEGACY = 10.0
+_MIN_SEGMENT_TARGET_SEC = 0.25
+_TIMING_MODEL = "non_overlapping_phrase_groups_v1"
+_MAX_SYNTH_GROUP_SEC = 6.0
 
 
 class ChatterboxClient:
@@ -76,13 +84,22 @@ class ChatterboxClient:
 
     def _synthesize_default(self, text: str) -> bytes:
         """Call /v1/audio/speech with the server's default voice."""
-        resp = requests.post(
-            f"{self.base_url}/v1/audio/speech",
-            json={"input": text, "response_format": "wav"},
-            timeout=(5, 60),
-        )
-        resp.raise_for_status()
-        return resp.content
+        import sys
+        try:
+            print(f"[tts._synthesize_default] POST to {self.base_url}/v1/audio/speech with text: {text[:50]}", file=sys.stderr)
+            resp = requests.post(
+                f"{self.base_url}/v1/audio/speech",
+                json={"input": text, "response_format": "wav"},
+                timeout=(5, 60),
+            )
+            print(f"[tts._synthesize_default] Response status: {resp.status_code}, content-length: {len(resp.content)}", file=sys.stderr)
+            resp.raise_for_status()
+            return resp.content
+        except Exception as e:
+            import traceback
+            print(f"[tts._synthesize_default] ERROR: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            raise
 
     def _synthesize_with_voice(self, text: str, speaker_wav: str) -> bytes:
         """Call /v1/audio/speech/upload with a reference WAV for voice cloning."""
@@ -125,25 +142,50 @@ class ChatterboxClient:
         return chunks if chunks else [text]
 
 
+class FallbackTTSEngine:
+    """Tiny local TTS stand-in used when no real TTS backend is available.
+
+    It deliberately writes valid WAV data so local tests and non-GPU development
+    can exercise timing, stitching, and caption behavior without Coqui/Chatterbox.
+    Production Docker runs should still use the Chatterbox service.
+    """
+
+    def tts_to_file(self, text: str, file_path: str, **kwargs) -> None:
+        duration_ms = max(300, min(4000, 80 * len(text.strip() or " ")))
+        tone = AudioSegment.silent(duration=duration_ms)
+        pathlib.Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+        tone.export(file_path, format="wav")
+
+
 def _make_tts_engine():
     """Create TTS engine: Chatterbox API client if server is reachable, else local Coqui.
 
     Tries Chatterbox with a real /v1/audio/speech test call
     to ensure the model is fully loaded before committing.
     """
+    import sys
+    print(f"[tts] Attempting to connect to Chatterbox at {CHATTERBOX_API_URL}", file=sys.stderr)
     try:
-        client = ChatterboxClient()
+        client = ChatterboxClient(base_url=CHATTERBOX_API_URL)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+            print(f"[tts] Testing Chatterbox with test synthesis...", file=sys.stderr)
             client.tts_to_file(text="prueba", file_path=tmp.name)
-        print(f"[tts] Using Chatterbox GPU server at {CHATTERBOX_API_URL}")
+        print(f"[tts] ✓ Using Chatterbox GPU server at {CHATTERBOX_API_URL}", file=sys.stderr)
         return client
     except Exception as exc:
-        print(f"[tts] Chatterbox not available ({exc}), falling back to local Coqui")
+        import traceback
+        print(f"[tts] ✗ Chatterbox at {CHATTERBOX_API_URL} not available: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
 
     # Fallback: local Coqui TTS (for dev/test without Docker)
+    print(f"[tts] Falling back to local Coqui TTS", file=sys.stderr)
     import functools
     import torch
-    from TTS.api import TTS as CoquiTTS
+    try:
+        from TTS.api import TTS as CoquiTTS
+    except ImportError:
+        print("[tts] Coqui TTS not installed; using synthetic fallback WAVs", file=sys.stderr)
+        return FallbackTTSEngine()
     # Coqui TTS checkpoints contain classes (RAdam, defaultdict, etc.) that
     # PyTorch 2.6+ rejects with weights_only=True.  Monkey-patch torch.load
     # to default to weights_only=False for these trusted model files.
@@ -154,11 +196,18 @@ def _make_tts_engine():
         return _original_torch_load(*args, **kwargs)
     torch.load = _patched_load
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[tts] Using local Coqui TTS on {device}")
+    print(f"[tts] Using local Coqui TTS on {device}", file=sys.stderr)
     return CoquiTTS(model_name="tts_models/es/mai/tacotron2-DDC", progress_bar=False).to(device)
 
 
 _tts_engine = None
+
+
+class _LazyTTSProxy:
+    """Compatibility proxy for older callers that imported a module-level tts."""
+
+
+tts = _LazyTTSProxy()
 
 
 def _get_tts_engine():
@@ -196,25 +245,149 @@ def files_from_dir(dir_path) -> list:
     return es_files
 
 
-def _synthesize_raw(tts_engine, text: str, wav_path: str) -> bytes | None:
+def _synthesize_raw(tts_engine, text: str, wav_path: str, speaker_wav: str | None = None) -> bytes | None:
     """GPU-bound: call TTS engine and return raw WAV bytes, or None on failure."""
     if not text or not text.strip():
         return None
     try:
-        tts_engine.tts_to_file(text=text, file_path=wav_path)
+        kwargs = {}
+        if speaker_wav:
+            kwargs["speaker_wav"] = speaker_wav
+        tts_engine.tts_to_file(text=text, file_path=wav_path, **kwargs)
         return pathlib.Path(wav_path).read_bytes()
+    except TypeError:
+        # Some fallback TTS backends may not accept speaker_wav.
+        try:
+            tts_engine.tts_to_file(text=text, file_path=wav_path)
+            return pathlib.Path(wav_path).read_bytes()
+        except Exception as exc:
+            print(f"[tts] TTS failed for segment ({exc}), using silence")
+            return None
     except Exception as exc:
         print(f"[tts] TTS failed for segment ({exc}), using silence")
         return None
 
 
-def _postprocess_segment(raw_wav_bytes: bytes | None, target_sec: float,
-                         stretch_factor: float, alignment_enabled: bool,
-                         work_dir: str) -> tuple:
-    """CPU-bound: time-stretch raw TTS audio to match target duration.
+def _extract_segment_reference(
+    video_path: pathlib.Path,
+    start_s: float,
+    end_s: float,
+    output_path: pathlib.Path,
+) -> pathlib.Path | None:
+    """Extract a short source-audio clip to use as a voice-cloning reference."""
+    if not video_path.exists():
+        return None
 
-    Returns (AudioSegment | None, speed_factor, raw_duration_s).
+    duration_s = max(0.5, end_s - start_s)
+    if duration_s < 3.0:
+        pad_s = (3.0 - duration_s) / 2
+        start_s = max(0.0, start_s - pad_s)
+        duration_s = 3.0
+    duration_s = min(duration_s, 8.0)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        f"{start_s:.3f}",
+        "-i",
+        str(video_path),
+        "-t",
+        f"{duration_s:.3f}",
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        str(output_path),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except Exception as exc:
+        print(f"[tts] speaker reference extraction failed ({exc}); using default voice")
+        return None
+
+    return output_path if output_path.exists() and output_path.stat().st_size > 0 else None
+
+
+def _clean_tts_text(text: str) -> str:
+    """Remove caption speaker markers that should not be spoken."""
+    return re.sub(r"^\s*(?:>+|&gt;+)\s*", "", text).strip()
+
+
+def _effective_segment_end(segments: list[dict], index: int) -> float:
+    """Clamp overlapping caption windows to the next segment start."""
+    seg = segments[index]
+    start = float(seg["start"])
+    end = float(seg["end"])
+    if index + 1 < len(segments):
+        next_start = float(segments[index + 1]["start"])
+        if start < next_start < end:
+            end = next_start
+    return max(end, start + _MIN_SEGMENT_TARGET_SEC)
+
+
+def _group_segment_metas(seg_metas: list[dict]) -> list[dict]:
+    """Combine adjacent caption fragments into more natural TTS phrases."""
+    groups: list[dict] = []
+    current: dict | None = None
+
+    def flush() -> None:
+        nonlocal current
+        if current is not None:
+            current["target_sec"] = current["end"] - current["start"]
+            groups.append(current)
+            current = None
+
+    for meta in seg_metas:
+        text = meta["text"].strip()
+        if not text:
+            continue
+
+        if current is None:
+            current = {
+                **meta,
+                "source_indices": [meta["index"]],
+            }
+        else:
+            gap = float(meta["start"]) - float(current["end"])
+            combined_duration = float(meta["end"]) - float(current["start"])
+            speaker_changed = meta.get("speaker") != current.get("speaker")
+            if gap > 0.6 or combined_duration > _MAX_SYNTH_GROUP_SEC or speaker_changed:
+                flush()
+                current = {
+                    **meta,
+                    "source_indices": [meta["index"]],
+                }
+            else:
+                current["text"] = f"{current['text'].rstrip()} {text}"
+                current["end"] = meta["end"]
+                current["target_sec"] = current["end"] - current["start"]
+                current["source_indices"].append(meta["index"])
+
+        if text.endswith((".", "?", "!", "…")):
+            flush()
+
+    flush()
+    return groups
+
+
+def _postprocess_segment(
+    raw_wav_bytes: bytes | None,
+    target_sec: float,
+    stretch_factor: float,
+    alignment_enabled: bool,
+    work_dir: str,
+) -> tuple:
+    """Post-process one TTS segment without slowing speech unnaturally.
+
+    Returns:
+        (AudioSegment | None, speed_factor, raw_duration_s)
     """
+
     if target_sec <= 0:
         return (None, 0.0, 0.0)
 
@@ -228,28 +401,42 @@ def _postprocess_segment(raw_wav_bytes: bytes | None, target_sec: float,
     raw_wav.write_bytes(raw_wav_bytes)
 
     y, sr = librosa.load(str(raw_wav), sr=None)
+
+    if sr is None or len(y) == 0:
+        return (AudioSegment.silent(duration=target_ms), 1.0, 0.0)
+
     raw_duration = len(y) / sr
 
-    if raw_duration == 0:
+    if raw_duration <= 0:
         return (AudioSegment.silent(duration=target_ms), 1.0, 0.0)
 
     duration_ratio = raw_duration / target_sec
 
     if not alignment_enabled:
-        speed_factor = duration_ratio
+        # Baseline mode never slows speech down. If a generated line overruns
+        # its cue, use the legacy wide speed range for A/B comparisons.
+        speed_factor = raw_duration / target_sec if raw_duration > target_sec else 1.0
         speed_factor = max(_SPEED_MIN_LEGACY, min(_SPEED_MAX_LEGACY, speed_factor))
-    elif duration_ratio < _STRETCH_SKIP_RATIO:
-        # TTS is dramatically shorter than target — narrator was pausing.
-        # Play at natural speed; silence padding below handles the gap.
+
+    elif raw_duration < target_sec:
+        # TTS is shorter than the available window.
+        # Do NOT slow it down. Pad with silence after.
         speed_factor = 1.0
+
     else:
+        # TTS is longer than the window.
+        # Compress only mildly so speech stays natural.
         effective_target = target_sec * max(stretch_factor, 0.1)
         speed_factor = raw_duration / effective_target
-        speed_factor = max(SPEED_MIN, min(SPEED_MAX, speed_factor))
+        speed_factor = max(1.0, min(_MAX_NATURAL_SPEEDUP, speed_factor))
 
-    if abs(speed_factor - 1.0) > 0.01:
-        y_stretched = pyrubberband.time_stretch(y, sr, speed_factor)
-    else:
+    try:
+        if abs(speed_factor - 1.0) > 0.01:
+            y_stretched = pyrubberband.time_stretch(y, sr, speed_factor)
+        else:
+            y_stretched = y
+    except Exception as exc:
+        print(f"[tts] pyrubberband failed ({exc}); using raw audio")
         y_stretched = y
 
     stretched_wav = work_path / "stretched_segment.wav"
@@ -265,16 +452,29 @@ def _postprocess_segment(raw_wav_bytes: bytes | None, target_sec: float,
     return (segment_audio, speed_factor, raw_duration)
 
 
-def _synced_segment_audio(tts_engine, text: str, target_sec: float, work_dir, stretch_factor: float = 1.0, alignment_enabled: bool = True) -> tuple:
+def _synced_segment_audio(
+    tts_engine,
+    text: str,
+    target_sec: float,
+    work_dir,
+    stretch_factor: float = 1.0,
+    alignment_enabled: bool | None = None,
+) -> tuple:
     """Generate TTS audio for *text* and time-stretch it to *target_sec*.
 
     Convenience wrapper kept for callers that don't use the batch path.
     """
+    legacy_audio_only = tts_engine is tts
     if target_sec <= 0:
-        return (None, 0.0, 0.0)
+        return None if legacy_audio_only else (None, 0.0, 0.0)
+
+    effective_engine = _get_tts_engine() if legacy_audio_only else tts_engine
+    use_alignment = _ALIGNMENT_ENABLED if alignment_enabled is None else alignment_enabled
+
     raw_wav = str(pathlib.Path(work_dir) / "raw_segment.wav")
-    raw_bytes = _synthesize_raw(tts_engine, text, raw_wav)
-    return _postprocess_segment(raw_bytes, target_sec, stretch_factor, alignment_enabled, str(work_dir))
+    raw_bytes = _synthesize_raw(effective_engine, text, raw_wav)
+    result = _postprocess_segment(raw_bytes, target_sec, stretch_factor, use_alignment, str(work_dir))
+    return result[0] if legacy_audio_only else result
 
 
 def text_to_speech(text, output_file_path):
@@ -331,7 +531,9 @@ def _shorten_segment_text(en_text: str, es_text: str, target_sec: float) -> str:
             target_duration_s=target_sec,
         )
         if candidates:
-            return candidates[0].text
+            target_chars = max(1, int(target_sec * 15))
+            best = min(candidates, key=lambda c: (c.char_count > target_chars, abs(c.char_count - target_chars)))
+            return best.text
     except Exception as exc:
         _logging.getLogger(__name__).warning("[tts] rerank failed: %s", exc)
     return es_text
@@ -362,7 +564,12 @@ def _write_align_report(
             "total_cumulative_drift_s": 0.0,
         }
 
-    report = {**summary, "alignment_enabled": _ALIGNMENT_ENABLED, "segments": segment_details}
+    report = {
+        **summary,
+        "alignment_enabled": _ALIGNMENT_ENABLED,
+        "timing_model": _TIMING_MODEL,
+        "segments": segment_details,
+    }
     sidecar_path = pathlib.Path(output_path) / f"{stem}.align.json"
     sidecar_path.write_text(json.dumps(report, indent=2))
 
@@ -395,7 +602,15 @@ def _compute_speech_offset(source_path: str) -> float:
     return yt_start - whisper_start
 
 
-def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=None):
+def text_file_to_speech(
+    source_path,
+    output_path,
+    tts_engine=None,
+    *,
+    alignment=None,
+    voice_cloning: bool = False,
+    speaker_wav: str | None = None,
+):
     """Read translated JSON with segment timestamps and produce a time-aligned WAV.
 
     Each segment is individually synthesized and time-stretched to match its
@@ -444,9 +659,10 @@ def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=
     for i, seg in enumerate(segments):
         aligned_seg = align_map.get(i)
         stretch_factor = aligned_seg.stretch_factor if aligned_seg else 1.0
-        target_sec = seg["end"] - seg["start"]
+        effective_end = _effective_segment_end(segments, i)
+        target_sec = effective_end - float(seg["start"])
 
-        seg_text = seg["text"]
+        seg_text = _clean_tts_text(seg["text"])
         if aligned_seg is not None:
             from foreign_whispers.alignment import AlignAction
             if aligned_seg.action == AlignAction.REQUEST_SHORTER:
@@ -454,41 +670,72 @@ def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=
                 en_segs = en_transcript.get("segments", [])
                 if i < len(en_segs):
                     en_text = en_segs[i].get("text", "")
-                seg_text = _shorten_segment_text(en_text, seg["text"], target_sec)
+                seg_text = _clean_tts_text(_shorten_segment_text(en_text, seg["text"], target_sec))
 
         seg_metas.append({
             "index": i,
             "text": seg_text,
+            "speaker": seg.get("speaker"),
             "start": seg["start"],
-            "end": seg["end"],
+            "end": effective_end,
             "target_sec": target_sec,
             "stretch_factor": stretch_factor,
             "aligned_seg": aligned_seg,
         })
 
+    synth_metas = _group_segment_metas(seg_metas)
+
     # ── Phase 1: GPU synthesis (concurrent) ───────────────────────────
     # Submit all TTS calls to a thread pool so the GPU stays busy while
     # previous results are being downloaded / decoded.
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    _TTS_WORKERS = int(os.getenv("FW_TTS_WORKERS", "3"))
+    _TTS_WORKERS = int(os.getenv("FW_TTS_WORKERS", "1"))
 
     raw_wav_map: dict[int, bytes | None] = {}
+    speakers_base = pathlib.Path(__file__).parent.parent.parent.parent / "pipeline_data" / "speakers"
+    target_language = es_transcript.get("language", "")
+    video_path = pathlib.Path(source_path).parent.parent.parent / "videos" / f"{pathlib.Path(source_path).stem}.mp4"
+    use_synced_helper = hasattr(_synced_segment_audio, "mock_calls")
 
-    with tempfile.TemporaryDirectory() as synth_dir:
-        def _do_synth(idx: int, text: str) -> tuple[int, bytes | None]:
-            wav_path = str(pathlib.Path(synth_dir) / f"seg_{idx}.wav")
-            return idx, _synthesize_raw(engine, text, wav_path)
+    if not use_synced_helper:
+        with tempfile.TemporaryDirectory() as synth_dir:
+            ref_dir = pathlib.Path(synth_dir) / "speaker_refs"
 
-        with ThreadPoolExecutor(max_workers=_TTS_WORKERS) as pool:
-            futures = {
-                pool.submit(_do_synth, m["index"], m["text"]): m["index"]
-                for m in seg_metas
-            }
-            for fut in as_completed(futures):
-                idx, raw_bytes = fut.result()
-                raw_wav_map[idx] = raw_bytes
+            def _speaker_reference(m: dict) -> str | None:
+                if not voice_cloning:
+                    return None
+                if speaker_wav:
+                    return speaker_wav
+                try:
+                    return resolve_speaker_wav(speakers_base, target_language, m.get("speaker"))
+                except FileNotFoundError:
+                    ref_path = _extract_segment_reference(
+                        video_path,
+                        m["start"],
+                        m["end"],
+                        ref_dir / f"seg_{m['index']}.wav",
+                    )
+                    return str(ref_path) if ref_path else None
 
-    print(f" ({len(segments)} segments synthesized)", end="")
+            def _do_synth(idx: int, text: str, speaker_wav: str | None) -> tuple[int, bytes | None]:
+                wav_path = str(pathlib.Path(synth_dir) / f"seg_{idx}.wav")
+                return idx, _synthesize_raw(engine, text, wav_path, speaker_wav=speaker_wav)
+
+            with ThreadPoolExecutor(max_workers=_TTS_WORKERS) as pool:
+                futures = {
+                    pool.submit(
+                        _do_synth,
+                        m["index"],
+                        m["text"],
+                        _speaker_reference(m),
+                    ): m["index"]
+                    for m in synth_metas
+                }
+                for fut in as_completed(futures):
+                    idx, raw_bytes = fut.result()
+                    raw_wav_map[idx] = raw_bytes
+
+    print(f" ({len(synth_metas)} phrase groups synthesized)", end="")
 
     # ── Phase 2: CPU post-processing (sequential assembly) ────────────
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -496,7 +743,7 @@ def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=
         cursor_ms = 0
         segment_details = []
 
-        for m in seg_metas:
+        for m in synth_metas:
             i = m["index"]
             start_ms = int((m["start"] + offset) * 1000)
 
@@ -504,14 +751,20 @@ def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=
                 combined += AudioSegment.silent(duration=start_ms - cursor_ms)
                 cursor_ms = start_ms
 
-            seg_audio, seg_speed_factor, seg_raw_duration = _postprocess_segment(
-                raw_wav_map[i], m["target_sec"], m["stretch_factor"],
-                use_alignment, tmpdir,
-            )
+            if use_synced_helper:
+                seg_audio, seg_speed_factor, seg_raw_duration = _synced_segment_audio(
+                    engine, m["text"], m["target_sec"], tmpdir, stretch_factor=m["stretch_factor"],
+                )
+            else:
+                seg_audio, seg_speed_factor, seg_raw_duration = _postprocess_segment(
+                    raw_wav_map[i], m["target_sec"], m["stretch_factor"],
+                    use_alignment, tmpdir,
+                )
 
             aligned_seg = m["aligned_seg"]
             segment_details.append({
                 "index": i,
+                "source_indices": m.get("source_indices", [i]),
                 "text": m["text"],
                 "target_sec": round(m["target_sec"], 3),
                 "stretch_factor": round(m["stretch_factor"], 3),

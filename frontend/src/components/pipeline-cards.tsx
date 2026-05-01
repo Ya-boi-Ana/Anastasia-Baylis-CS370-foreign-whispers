@@ -21,7 +21,6 @@ import type {
   PipelineStage,
   TranscribeResponse,
   TranslateResponse,
-  DownloadResponse,
 } from "@/lib/types";
 
 function formatTime(seconds: number): string {
@@ -74,7 +73,6 @@ export function PipelineCards({ pipelineState }: PipelineCardsProps) {
   const totalTime = completedTime + (activeElapsed ?? 0);
   const pipelineTimeStr = totalTime > 0 ? formatDuration(totalTime) : "--";
 
-  const downloadResult = pipelineState.stages.download.result as DownloadResponse | undefined;
   const transcribeResult = pipelineState.stages.transcribe.result as TranscribeResponse | undefined;
   const translateResult = pipelineState.stages.translate.result as TranslateResponse | undefined;
 
@@ -85,9 +83,6 @@ export function PipelineCards({ pipelineState }: PipelineCardsProps) {
   const speechDuration = transcribeResult?.segments?.length
     ? transcribeResult.segments[transcribeResult.segments.length - 1].end
     : undefined;
-
-  // Caption count from download
-  const captionCount = downloadResult?.caption_segments?.length;
 
   // Translation word count
   const translationWordCount = translateResult?.text

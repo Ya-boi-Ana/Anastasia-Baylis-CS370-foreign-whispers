@@ -55,6 +55,7 @@ services:
   api:
     container_name: foreign-whispers-api
     profiles: [nvidia, cpu]
+    network_mode: host
     build:
       context: .
       dockerfile: Dockerfile
@@ -62,11 +63,15 @@ services:
         USER_UID: "${UID:-1000}"
         USER_GID: "${GID:-1000}"
     restart: unless-stopped
-    network_mode: host
-    command: ["uv", "run", "uvicorn", "api.src.main:app", "--host", "0.0.0.0", "--port", "8080"]
+    command:
+      - sh
+      - -c
+      - PYTHONPATH=/app/.venv/lib/python3.11/site-packages /app/.venv/bin/uv run uvicorn api.src.main:app --host 0.0.0.0 --port 8080
     environment:
-      - CHATTERBOX_API_URL=http://localhost:8020
+      - FW_CHATTERBOX_API_URL=http://localhost:8020
+      - FW_WHISPER_API_URL=http://localhost:8000
       - FW_WHISPER_MODEL=base
+      - PYTHONPATH=/app/.venv/lib/python3.11/site-packages
     volumes:
       - ./pipeline_data:/app/pipeline_data
       - ./foreign_whispers:/app/foreign_whispers
@@ -80,12 +85,17 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        API_URL: http://api:8080
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "8501:8501"
     environment:
-      - API_URL=http://localhost:8080
+      - API_URL=http://host.docker.internal:8080
       - HOSTNAME=0.0.0.0
       - PORT=8501
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8501"]
       interval: 15s

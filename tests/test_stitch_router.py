@@ -153,3 +153,30 @@ def test_get_video_not_found(client, monkeypatch, ui_dir):
 
     resp = client.get("/api/video/NONEXISTENT?config=c-0000000")
     assert resp.status_code == 404
+
+
+def test_segments_to_vtt_does_not_repeat_previous_caption():
+    """Generated WebVTT cues should not create duplicate rolling captions."""
+    from api.src.routers.stitch import _segments_to_vtt
+
+    vtt = _segments_to_vtt([
+        {"start": 0.0, "end": 1.0, "text": "Hola"},
+        {"start": 1.0, "end": 2.0, "text": "Mundo"},
+    ])
+
+    assert "Mundo\nHola" not in vtt
+    assert vtt.count("Hola") == 1
+    assert vtt.count("Mundo") == 1
+
+
+def test_segments_to_vtt_clamps_overlapping_cues():
+    """Overlapping transcript windows should not create simultaneous captions."""
+    from api.src.routers.stitch import _segments_to_vtt
+
+    vtt = _segments_to_vtt([
+        {"start": 0.0, "end": 3.0, "text": "Hola"},
+        {"start": 1.5, "end": 4.0, "text": "Mundo"},
+    ])
+
+    assert "00:00:00.000 --> 00:00:01.500" in vtt
+    assert "00:00:01.500 --> 00:00:04.000" in vtt

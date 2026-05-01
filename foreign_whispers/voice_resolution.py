@@ -1,11 +1,64 @@
-"""Voice resolution for Chatterbox speaker cloning.
+"""Voice resolution for speaker cloning.
 
-Resolves which reference WAV to use for a given target language
-and optional speaker ID. The Chatterbox container expects a filename
-relative to its /app/voices/ mount point.
+Resolves which reference WAV to use for a given language and speaker ID.
+If the WAV does not exist but a reference media file does, it auto-extracts
+a usable speaker sample via ffmpeg.
 """
 
 from pathlib import Path
+import subprocess
+import shutil
+
+
+SUPPORTED_MEDIA = {".wav", ".mp4", ".m4a", ".mp3", ".aac", ".mov"}
+
+
+def _extract_wav(source: Path, target: Path) -> None:
+    """Convert media file into 16kHz mono WAV for cloning."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i", str(source),
+            "-t", "8",
+            "-ar", "16000",
+            "-ac", "1",
+            str(target),
+        ],
+        check=True,
+    )
+
+
+def _ensure_reference_wav(
+    speakers_dir: Path,
+    target_language: str,
+    speaker_id: str,
+) -> Path | None:
+    """
+    Ensure speakers/{lang}/{speaker}.wav exists.
+
+    If missing but a matching reference media file exists,
+    automatically convert it.
+    """
+
+    lang_dir = speakers_dir / target_language
+    wav_path = lang_dir / f"{speaker_id}.wav"
+
+    if wav_path.exists():
+        return wav_path
+
+    for ext in SUPPORTED_MEDIA:
+        candidate = lang_dir / f"{speaker_id}{ext}"
+        if candidate.exists():
+            if ext == ".wav":
+                return candidate
+
+            _extract_wav(candidate, wav_path)
+            return wav_path
+
+    return None
 
 
 def resolve_speaker_wav(
@@ -13,56 +66,45 @@ def resolve_speaker_wav(
     target_language: str,
     speaker_id: str | None = None,
 ) -> str:
-    """Resolve the reference WAV path for voice cloning.
+    """
+    Resolve speaker reference WAV path.
 
     Resolution order:
-    1. speakers/{lang}/{speaker_id}.wav  (if speaker_id given and file exists)
-    2. speakers/{lang}/default.wav       (language-specific default)
-    3. speakers/default.wav              (global fallback)
 
-    Args:
-        speakers_dir: Absolute path to the speakers directory.
-        target_language: Language code (e.g. "es", "fr").
-        speaker_id: Optional speaker identifier (e.g. "SPEAKER_00").
+    1. speakers/{lang}/{speaker_id}.wav
+    2. speakers/{lang}/default.wav
+    3. speakers/default.wav
 
-    Returns:
-        Relative path string for the Chatterbox container (e.g. "es/default.wav").
+    Automatically converts reference media if needed.
     """
-def resolve_speaker_wav(
-    speakers_dir: Path,
-    target_language: str,
-    speaker_id: str | None = None,
-) -> str:
-    """Resolve the reference WAV path for voice cloning.
 
-    Resolution order:
-    1. speakers/{lang}/{speaker_id}.wav  (if speaker_id given and file exists)
-    2. speakers/{lang}/default.wav       (language-specific default)
-    3. speakers/default.wav              (global fallback)
+    speakers_dir = Path(speakers_dir)
+    target_language = target_language.lower().strip()
 
-    Args:
-        speakers_dir: Absolute path to the speakers directory.
-        target_language: Language code (e.g. "es", "fr").
-        speaker_id: Optional speaker identifier (e.g. "SPEAKER_00").
-
-    Returns:
-        Relative path string for the Chatterbox container (e.g. "es/default.wav").
-    """
-    # Option 1: speaker-specific
+    # Speaker-specific voice
     if speaker_id:
-        speaker_path = speakers_dir / target_language / f"{speaker_id}.wav"
-        if speaker_path.exists():
+        wav_path = _ensure_reference_wav(
+            speakers_dir,
+            target_language,
+            speaker_id,
+        )
+        if wav_path:
             return f"{target_language}/{speaker_id}.wav"
-    
-    # Option 2: language default
+
+    # Language default
     lang_default = speakers_dir / target_language / "default.wav"
     if lang_default.exists():
         return f"{target_language}/default.wav"
-    
-    # Option 3: global default
+
+    # Global default
     global_default = speakers_dir / "default.wav"
     if global_default.exists():
         return "default.wav"
-    
-    # Fallback if none exist
-    return "default.wav"  # or raise error, but assume default exists
+
+    raise FileNotFoundError(
+        "No usable speaker reference found.\n"
+        "Expected one of:\n"
+        f"- {speakers_dir}/{target_language}/{speaker_id}.wav\n"
+        f"- {speakers_dir}/{target_language}/default.wav\n"
+        f"- {speakers_dir}/default.wav"
+    )

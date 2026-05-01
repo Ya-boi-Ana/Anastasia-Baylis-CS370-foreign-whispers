@@ -37,15 +37,10 @@ _SYLLABLE_RATE = 4.5  # syllables per second for Romance languages
 
 
 def _estimate_duration(text: str) -> float:
-    """Estimate TTS duration in seconds using a character-rate heuristic.
-    
-    Improved from syllable-based to character-based for better accuracy.
-    ~15 characters per second for Romance languages.
-    """
-    char_count = len(text.strip())
-    if char_count == 0:
-        return 0.1  # minimum duration
-    return char_count / 15.0
+    """Estimate TTS duration in seconds using Romance-language syllables."""
+    if not text.strip():
+        return 0.1
+    return _count_syllables(text) / _SYLLABLE_RATE
 
 
 @dataclasses.dataclass

@@ -65,8 +65,8 @@ def dubbing_scorecard(
 
     Dimensions:
         timing_accuracy: How well TTS durations match source windows (inverse of MAE)
-        intelligibility: Round-trip STT accuracy (placeholder: 1.0)
-        semantic_fidelity: Meaning preservation (placeholder: 1.0)
+        intelligibility: Round-trip STT accuracy if supplied in align_report
+        semantic_fidelity: Token overlap proxy unless an embedding score is supplied
         naturalness: Consistency of speaking rates across segments
 
     Args:
@@ -92,11 +92,21 @@ def dubbing_scorecard(
     normalized_mae = mae / max(avg_duration, 0.1)  # relative error
     timing_accuracy = max(0, 1 - normalized_mae)
 
-    # Intelligibility: placeholder (would require STT round-trip)
-    intelligibility = 1.0
+    # Intelligibility can be provided by an STT round-trip evaluator. If it is
+    # absent, use timing/stretch penalties as a conservative proxy instead of a
+    # fake perfect score.
+    intelligibility = align_report.get("intelligibility")
+    if intelligibility is None:
+        retries = align_report.get("n_translation_retries", 0)
+        severe = align_report.get("pct_severe_stretch", 0.0) / 100
+        intelligibility = max(0.0, 1.0 - severe - 0.03 * retries)
 
-    # Semantic fidelity: placeholder (would require embedding similarity)
-    semantic_fidelity = 1.0
+    # Prefer a caller-provided semantic score; otherwise approximate with
+    # normalized token overlap between source and target text. This is weak for
+    # cross-lingual semantics, but it exposes uncertainty instead of masking it.
+    semantic_fidelity = align_report.get("semantic_fidelity")
+    if semantic_fidelity is None:
+        semantic_fidelity = _token_overlap_proxy(metrics)
 
     # Naturalness: variance in speaking rates
     rates = []
@@ -116,8 +126,32 @@ def dubbing_scorecard(
 
     return {
         "timing_accuracy": round(timing_accuracy, 3),
-        "intelligibility": round(intelligibility, 3),
-        "semantic_fidelity": round(semantic_fidelity, 3),
+        "intelligibility": round(float(intelligibility), 3),
+        "semantic_fidelity": round(float(semantic_fidelity), 3),
         "naturalness": round(naturalness, 3),
         "overall_score": round(overall_score, 3),
+    }
+
+
+def _token_overlap_proxy(metrics: list[SegmentMetrics]) -> float:
+    if not metrics:
+        return 0.0
+    scores = []
+    for m in metrics:
+        src = _token_set(m.source_text)
+        tgt = _token_set(m.translated_text)
+        if not src or not tgt:
+            scores.append(0.0)
+            continue
+        scores.append(len(src & tgt) / len(src | tgt))
+    return _stats.mean(scores)
+
+
+def _token_set(text: str) -> set[str]:
+    import re
+
+    return {
+        tok
+        for tok in re.findall(r"[\wáéíóúüñÁÉÍÓÚÜÑ]+", text.lower())
+        if len(tok) > 2
     }

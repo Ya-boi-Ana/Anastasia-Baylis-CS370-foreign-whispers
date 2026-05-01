@@ -21,7 +21,12 @@ def ui_dir(tmp_path):
 def client(monkeypatch, ui_dir):
     """Test client with models and download functions stubbed."""
     monkeypatch.setattr("whisper.load_model", lambda *a, **kw: MagicMock())
-    monkeypatch.setattr("TTS.api.TTS", lambda *a, **kw: MagicMock())
+
+    # Only mock TTS if it's importable; skip if not available in test environment
+    try:
+        monkeypatch.setattr("TTS.api.TTS", lambda *a, **kw: MagicMock())
+    except Exception:
+        pass
 
     # Patch settings so file I/O goes to tmp_path
     from api.src.core.config import settings

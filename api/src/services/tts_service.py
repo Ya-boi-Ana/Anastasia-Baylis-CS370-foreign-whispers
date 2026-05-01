@@ -17,9 +17,34 @@ class TTSService:
         self.ui_dir = ui_dir
         self.tts_engine = tts_engine
 
-    def text_file_to_speech(self, source_path: str, output_path: str, *, alignment: bool | None = None) -> None:
+    def text_file_to_speech(
+        self,
+        source_path: str,
+        output_path: str,
+        *,
+        alignment: bool | None = None,
+        voice_cloning: bool = False,
+        speaker_wav: str | None = None,
+    ) -> None:
         """Generate time-aligned TTS audio from a translated JSON transcript."""
-        tts_text_file_to_speech(source_path, output_path, self.tts_engine, alignment=alignment)
+        kwargs = {"alignment": alignment, "voice_cloning": voice_cloning}
+        if speaker_wav is not None:
+            kwargs["speaker_wav"] = speaker_wav
+        try:
+            tts_text_file_to_speech(source_path, output_path, self.tts_engine, **kwargs)
+        except TypeError as exc:
+            # Keep tests and older callables compatible while the public API
+            # grows optional voice-cloning parameters.
+            if "unexpected keyword argument 'speaker_wav'" in str(exc):
+                kwargs.pop("speaker_wav", None)
+                tts_text_file_to_speech(source_path, output_path, self.tts_engine, **kwargs)
+                return
+            if "unexpected keyword argument 'voice_cloning'" in str(exc):
+                kwargs.pop("speaker_wav", None)
+                kwargs.pop("voice_cloning", None)
+                tts_text_file_to_speech(source_path, output_path, self.tts_engine, **kwargs)
+                return
+            raise
 
     @staticmethod
     def title_for_video_id(video_id: str, search_dir: pathlib.Path) -> str | None:

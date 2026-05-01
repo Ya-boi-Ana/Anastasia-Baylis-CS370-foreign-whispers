@@ -4,6 +4,7 @@ import type {
   TranslateResponse,
   TTSResponse,
   StitchResponse,
+  DiarizeResponse,
 } from "./types";
 
 class ApiError extends Error {
@@ -49,13 +50,20 @@ export async function translateVideo(
   );
 }
 
+export async function diarizeVideo(videoId: string): Promise<DiarizeResponse> {
+  return fetchJson<DiarizeResponse>(`/api/diarize/${videoId}`, {
+    method: "POST",
+  });
+}
+
 export async function synthesizeSpeech(
   videoId: string,
   config: string,
-  alignment: boolean = false
+  alignment: boolean = false,
+  voiceCloning = false
 ): Promise<TTSResponse> {
   return fetchJson<TTSResponse>(
-    `/api/tts/${videoId}?config=${config}&alignment=${alignment}`,
+    `/api/tts/${videoId}?config=${config}&alignment=${alignment}&voice_cloning=${voiceCloning}`,
     { method: "POST" }
   );
 }

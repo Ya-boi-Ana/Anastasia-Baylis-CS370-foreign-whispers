@@ -11,6 +11,10 @@ from api.src.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+class _LazyModelProxy:
+    """Mutable placeholder used by tests without forcing model startup loads."""
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lazy model loading — models are loaded on first use, not at startup.
@@ -18,6 +22,8 @@ async def lifespan(app: FastAPI):
     This avoids blocking startup in Docker Compose where Whisper and TTS
     inference may be handled by separate containers (speaches, Chatterbox).
     """
+    app.state.whisper_model = _LazyModelProxy()
+    app.state.tts_model = _LazyModelProxy()
     app.state._whisper_model = None
     app.state._tts_model = None
     logger.info("Application ready (models will load on first use).")
@@ -42,25 +48,39 @@ async def lifespan(app: FastAPI):
         del app.state._whisper_model
     if app.state._tts_model is not None:
         del app.state._tts_model
+    if hasattr(app.state, "whisper_model"):
+        del app.state.whisper_model
+    if hasattr(app.state, "tts_model"):
+        del app.state.tts_model
     logger.info("Models unloaded.")
 
 
 def get_whisper_model(app):
     """Lazy-load Whisper model on first use."""
+    public_model = getattr(app.state, "whisper_model", None)
+    if callable(getattr(public_model, "transcribe", None)):
+        return public_model
+
     if app.state._whisper_model is None:
         logger.info("Loading Whisper model (%s)...", settings.whisper_model)
         import whisper
         app.state._whisper_model = whisper.load_model(settings.whisper_model)
+        app.state.whisper_model = app.state._whisper_model
         logger.info("Whisper model loaded.")
     return app.state._whisper_model
 
 
 def get_tts_model(app):
     """Lazy-load TTS model on first use."""
+    public_model = getattr(app.state, "tts_model", None)
+    if callable(getattr(public_model, "tts", None)) or callable(getattr(public_model, "tts_to_file", None)):
+        return public_model
+
     if app.state._tts_model is None:
         logger.info("Loading TTS model (%s)...", settings.tts_model_name)
         from TTS.api import TTS
         app.state._tts_model = TTS(model_name=settings.tts_model_name, progress_bar=False)
+        app.state.tts_model = app.state._tts_model
         logger.info("TTS model loaded.")
     return app.state._tts_model
 
@@ -86,12 +106,14 @@ def create_app() -> FastAPI:
     from api.src.routers.translate import router as translate_router
     from api.src.routers.tts import router as tts_router
     from api.src.routers.stitch import router as stitch_router
+    from api.src.routers.diarize import router as diarize_router
 
     app.include_router(download_router)
     app.include_router(transcribe_router)
     app.include_router(translate_router)
     app.include_router(tts_router)
     app.include_router(stitch_router)
+    app.include_router(diarize_router)
     from api.src.routers.eval import router as eval_router
     app.include_router(eval_router)
 

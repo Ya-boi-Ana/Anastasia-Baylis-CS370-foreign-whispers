@@ -18,7 +18,12 @@ def ui_dir(tmp_path):
 @pytest.fixture()
 def client(monkeypatch, ui_dir):
     monkeypatch.setattr("whisper.load_model", lambda *a, **kw: MagicMock())
-    monkeypatch.setattr("TTS.api.TTS", lambda *a, **kw: MagicMock())
+    
+    # Only mock TTS if it's importable; skip if not available in test environment
+    try:
+        monkeypatch.setattr("TTS.api.TTS", lambda *a, **kw: MagicMock())
+    except Exception:
+        pass
 
     from api.src.core.config import settings
 
@@ -50,7 +55,7 @@ def test_tts_returns_audio_path(client, monkeypatch, ui_dir):
         lambda video_id: "Test Title",
     )
 
-    def fake_tts(source_path, output_path, tts_engine=None, alignment=False):
+    def fake_tts(source_path, output_path, tts_engine=None, alignment=False, voice_cloning=False, speaker_wav=None):
         wav = pathlib.Path(output_path) / "Test Title.wav"
         wav.write_bytes(b"RIFF" + b"\x00" * 100)
 
@@ -62,6 +67,53 @@ def test_tts_returns_audio_path(client, monkeypatch, ui_dir):
     assert body["video_id"] == "G3Eup4mfJdA"
     assert body["audio_path"].endswith(".wav")
     assert body["config"] == "c-0000000"
+
+
+def test_tts_passes_voice_cloning_flag(client, monkeypatch, ui_dir):
+    """POST /api/tts/{video_id}?voice_cloning=true forwards the flag to the TTS service."""
+    src = ui_dir / "translations" / "argos" / "Test Title.json"
+    src.write_text(json.dumps(_translated_transcript()))
+
+    monkeypatch.setattr(
+        "api.src.routers.tts.resolve_title",
+        lambda video_id: "Test Title",
+    )
+
+    def fake_tts(source_path, output_path, tts_engine=None, alignment=False, voice_cloning=False, speaker_wav=None):
+        assert voice_cloning is True
+        wav = pathlib.Path(output_path) / "Test Title.wav"
+        wav.write_bytes(b"RIFF" + b"\x00" * 100)
+
+    monkeypatch.setattr("api.src.services.tts_service.tts_text_file_to_speech", fake_tts)
+
+    resp = client.post("/api/tts/G3Eup4mfJdA?config=c-0000000&voice_cloning=true")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["video_id"] == "G3Eup4mfJdA"
+    assert body["audio_path"].endswith(".wav")
+    assert body["config"] == "c-0000000"
+
+
+def test_tts_passes_speaker_wav(client, monkeypatch, ui_dir):
+    """POST /api/tts/{video_id}?speaker_wav=... forwards explicit voice selection."""
+    src = ui_dir / "translations" / "argos" / "Test Title.json"
+    src.write_text(json.dumps(_translated_transcript()))
+
+    monkeypatch.setattr(
+        "api.src.routers.tts.resolve_title",
+        lambda video_id: "Test Title",
+    )
+
+    def fake_tts(source_path, output_path, tts_engine=None, alignment=False, voice_cloning=False, speaker_wav=None):
+        assert voice_cloning is True
+        assert speaker_wav == "es/SPEAKER_00.wav"
+        wav = pathlib.Path(output_path) / "Test Title.wav"
+        wav.write_bytes(b"RIFF" + b"\x00" * 100)
+
+    monkeypatch.setattr("api.src.services.tts_service.tts_text_file_to_speech", fake_tts)
+
+    resp = client.post("/api/tts/G3Eup4mfJdA?config=c-0000000&speaker_wav=es/SPEAKER_00.wav")
+    assert resp.status_code == 200
 
 
 def test_tts_skips_if_cached(client, monkeypatch, ui_dir):
@@ -78,7 +130,7 @@ def test_tts_skips_if_cached(client, monkeypatch, ui_dir):
 
     tts_called = {"count": 0}
 
-    def tracking_tts(source_path, output_path, tts_engine=None, alignment=False):
+    def tracking_tts(source_path, output_path, tts_engine=None, alignment=False, voice_cloning=False, speaker_wav=None):
         tts_called["count"] += 1
 
     monkeypatch.setattr("api.src.services.tts_service.tts_text_file_to_speech", tracking_tts)
@@ -111,7 +163,7 @@ def test_tts_runs_in_threadpool(client, monkeypatch, ui_dir):
 
     executor_used = {"yes": False}
 
-    def fake_tts(source_path, output_path, tts_engine=None, alignment=False):
+    def fake_tts(source_path, output_path, tts_engine=None, alignment=False, voice_cloning=False, speaker_wav=None):
         wav = pathlib.Path(output_path) / "Test Title.wav"
         wav.write_bytes(b"RIFF" + b"\x00" * 100)
 
@@ -132,3 +184,16 @@ def test_tts_rejects_invalid_config(client, monkeypatch, ui_dir):
     """Config param must match ^c-[0-9a-f]{7}$ to prevent path traversal."""
     resp = client.post("/api/tts/G3Eup4mfJdA?config=../../etc")
     assert resp.status_code == 422
+
+
+def test_cached_audio_with_legacy_slowdown_is_not_current(tmp_path):
+    """Legacy sidecars with speed_factor < 1 should force TTS regeneration."""
+    from api.src.routers.tts import _cached_audio_is_current
+
+    wav = tmp_path / "Test Title.wav"
+    wav.write_bytes(b"RIFF")
+    wav.with_suffix(".align.json").write_text(json.dumps({
+        "segments": [{"speed_factor": 0.72}],
+    }))
+
+    assert _cached_audio_is_current(wav) is False

@@ -55,6 +55,10 @@ class Settings(BaseSettings):
         return self.data_dir / "translations" / self.translation_model_dir
 
     @property
+    def diarizations_dir(self) -> Path:
+        return self.data_dir / "diarizations"
+
+    @property
     def tts_audio_dir(self) -> Path:
         return self.data_dir / "tts_audio" / self.tts_model_dir
 
