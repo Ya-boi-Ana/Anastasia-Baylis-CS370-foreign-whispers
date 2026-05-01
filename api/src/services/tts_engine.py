@@ -42,6 +42,12 @@ _TTS_CONNECT_TIMEOUT = float(os.getenv("FW_TTS_CONNECT_TIMEOUT", "5"))
 _TTS_READ_TIMEOUT = float(os.getenv("FW_TTS_READ_TIMEOUT", "180"))
 _TTS_RETRIES = int(os.getenv("FW_TTS_RETRIES", "3"))
 _TTS_RETRY_BACKOFF_SEC = float(os.getenv("FW_TTS_RETRY_BACKOFF_SEC", "1.5"))
+_EXTRACT_SEGMENT_VOICE_REFS = os.getenv("FW_TTS_EXTRACT_SEGMENT_VOICE_REFS", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 class ChatterboxClient:
@@ -331,7 +337,13 @@ def _extract_segment_reference(
 
 def _clean_tts_text(text: str) -> str:
     """Remove caption speaker markers that should not be spoken."""
-    return re.sub(r"^\s*(?:>+|&gt;+)\s*", "", text).strip()
+    cleaned = re.sub(r"^\s*(?:>+|&gt;+)\s*", "", text).strip()
+    cleaned = re.sub(r"\[[^\]]+\]", " ", cleaned)
+    cleaned = re.sub(r"#{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned and not re.search(r"[\wÀ-ÖØ-öø-ÿ]", cleaned):
+        return ""
+    return cleaned
 
 
 def _effective_segment_end(segments: list[dict], index: int) -> float:
@@ -584,6 +596,7 @@ def _write_align_report(
         **summary,
         "alignment_enabled": _ALIGNMENT_ENABLED,
         "timing_model": _TIMING_MODEL,
+        "synthesis_failures": sum(1 for s in segment_details if s.get("raw_duration_s") == 0),
         "segments": segment_details,
     }
     sidecar_path = pathlib.Path(output_path) / f"{stem}.align.json"
@@ -727,6 +740,8 @@ def text_file_to_speech(
             try:
                 return resolve_speaker_wav(speakers_base, target_language, m.get("speaker"))
             except FileNotFoundError:
+                if not _EXTRACT_SEGMENT_VOICE_REFS:
+                    return None
                 ref_path = _extract_segment_reference(
                     video_path,
                     m["start"],

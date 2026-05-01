@@ -197,3 +197,21 @@ def test_cached_audio_with_legacy_slowdown_is_not_current(tmp_path):
     }))
 
     assert _cached_audio_is_current(wav) is False
+
+
+def test_cached_audio_with_many_silent_fallbacks_is_not_current(tmp_path):
+    """Sidecars with many failed syntheses should force TTS regeneration."""
+    from api.src.routers.tts import _cached_audio_is_current
+
+    wav = tmp_path / "Test Title.wav"
+    wav.write_bytes(b"RIFF")
+    wav.with_suffix(".align.json").write_text(json.dumps({
+        "timing_model": "non_overlapping_phrase_groups_v1",
+        "segments": [
+            {"speed_factor": 1.0, "raw_duration_s": 0.0},
+            {"speed_factor": 1.0, "raw_duration_s": 0.0},
+            {"speed_factor": 1.0, "raw_duration_s": 2.0},
+        ],
+    }))
+
+    assert _cached_audio_is_current(wav) is False

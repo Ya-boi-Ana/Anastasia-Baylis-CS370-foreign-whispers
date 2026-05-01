@@ -33,6 +33,13 @@ def _cached_audio_is_current(wav_path: pathlib.Path) -> bool:
         speed_factor = segment.get("speed_factor")
         if isinstance(speed_factor, (int, float)) and speed_factor < 0.99:
             return False
+
+    segments = report.get("segments", [])
+    if segments:
+        failures = sum(1 for segment in segments if segment.get("raw_duration_s") == 0)
+        if failures / len(segments) > 0.2:
+            return False
+
     return True
 
 
