@@ -4,6 +4,7 @@ import asyncio
 import functools
 import json
 import pathlib
+from collections import defaultdict
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -13,6 +14,7 @@ from api.src.core.dependencies import resolve_title
 from api.src.services.tts_service import TTSService
 
 router = APIRouter(prefix="/api")
+_tts_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 def _cached_audio_is_current(wav_path: pathlib.Path) -> bool:
@@ -83,15 +85,24 @@ async def tts_endpoint(
 
     source_path = str(trans_dir / f"{title}.json")
 
-    await _run_in_threadpool(
-        None,
-        svc.text_file_to_speech,
-        source_path,
-        str(audio_dir),
-        alignment=alignment,
-        voice_cloning=voice_cloning or speaker_wav is not None,
-        speaker_wav=speaker_wav,
-    )
+    lock = _tts_locks[(video_id, config)]
+    async with lock:
+        if wav_path.exists() and _cached_audio_is_current(wav_path):
+            return {
+                "video_id": video_id,
+                "audio_path": str(wav_path),
+                "config": config,
+            }
+
+        await _run_in_threadpool(
+            None,
+            svc.text_file_to_speech,
+            source_path,
+            str(audio_dir),
+            alignment=alignment,
+            voice_cloning=voice_cloning or speaker_wav is not None,
+            speaker_wav=speaker_wav,
+        )
 
     return {
         "video_id": video_id,

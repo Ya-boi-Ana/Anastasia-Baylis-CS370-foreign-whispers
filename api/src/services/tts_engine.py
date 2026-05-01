@@ -8,6 +8,7 @@ import re
 import subprocess
 import tempfile
 import time
+import hashlib
 
 import requests
 import librosa
@@ -42,6 +43,8 @@ _TTS_CONNECT_TIMEOUT = float(os.getenv("FW_TTS_CONNECT_TIMEOUT", "5"))
 _TTS_READ_TIMEOUT = float(os.getenv("FW_TTS_READ_TIMEOUT", "180"))
 _TTS_RETRIES = int(os.getenv("FW_TTS_RETRIES", "3"))
 _TTS_RETRY_BACKOFF_SEC = float(os.getenv("FW_TTS_RETRY_BACKOFF_SEC", "1.5"))
+_MAX_CONSECUTIVE_TTS_FAILURES = int(os.getenv("FW_TTS_MAX_CONSECUTIVE_FAILURES", "5"))
+_SYNTH_CACHE_VERSION = "v2"
 _EXTRACT_SEGMENT_VOICE_REFS = os.getenv("FW_TTS_EXTRACT_SEGMENT_VOICE_REFS", "false").lower() in {
     "1",
     "true",
@@ -290,6 +293,33 @@ def _synthesize_raw(tts_engine, text: str, wav_path: str, speaker_wav: str | Non
         return None
 
 
+def _synth_cache_key(m: dict, speaker_wav: str | None, use_alignment: bool) -> str:
+    """Stable key for reusable raw TTS phrase audio."""
+    payload = {
+        "version": _SYNTH_CACHE_VERSION,
+        "text": m.get("text", ""),
+        "speaker_wav": speaker_wav or "",
+        "target_sec": round(float(m.get("target_sec", 0.0)), 3),
+        "stretch_factor": round(float(m.get("stretch_factor", 1.0)), 3),
+        "alignment": bool(use_alignment),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _read_cached_raw(cache_path: pathlib.Path) -> bytes | None:
+    if not cache_path.exists() or cache_path.stat().st_size <= 44:
+        return None
+    return cache_path.read_bytes()
+
+
+def _write_cached_raw(cache_path: pathlib.Path, raw_bytes: bytes) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    tmp_path.write_bytes(raw_bytes)
+    tmp_path.replace(cache_path)
+
+
 def _extract_segment_reference(
     video_path: pathlib.Path,
     start_s: float,
@@ -341,6 +371,7 @@ def _clean_tts_text(text: str) -> str:
     cleaned = re.sub(r"\[[^\]]+\]", " ", cleaned)
     cleaned = re.sub(r"#{2,}", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"^[^\wÀ-ÖØ-öø-ÿ¿¡]+(?=\s*\w)", "", cleaned).strip()
     if cleaned and not re.search(r"[\wÀ-ÖØ-öø-ÿ]", cleaned):
         return ""
     return cleaned
@@ -723,9 +754,13 @@ def text_file_to_speech(
     use_synced_helper = hasattr(_synced_segment_audio, "mock_calls")
 
     synth_count = 0
+    cache_hit_count = 0
     failed_count = 0
+    consecutive_failures = 0
 
     # ── Phase 2: CPU post-processing (sequential assembly) ────────────
+    save_path = pathlib.Path(output_path) / save_name
+    cache_dir = pathlib.Path(output_path) / ".synth_cache" / pathlib.Path(source_path).stem
     with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as synth_dir:
         combined = AudioSegment.empty()
         cursor_ms = 0
@@ -763,16 +798,32 @@ def text_file_to_speech(
                     engine, m["text"], m["target_sec"], tmpdir, stretch_factor=m["stretch_factor"],
                 )
             else:
+                resolved_speaker_wav = _speaker_reference(m)
+                cache_path = cache_dir / f"{_synth_cache_key(m, resolved_speaker_wav, use_alignment)}.wav"
+                raw_bytes = _read_cached_raw(cache_path)
                 wav_path = str(pathlib.Path(synth_dir) / f"seg_{i}.wav")
-                raw_bytes = _synthesize_raw(
-                    engine,
-                    m["text"],
-                    wav_path,
-                    speaker_wav=_speaker_reference(m),
-                )
-                synth_count += 1
+                if raw_bytes is not None:
+                    cache_hit_count += 1
+                else:
+                    raw_bytes = _synthesize_raw(
+                        engine,
+                        m["text"],
+                        wav_path,
+                        speaker_wav=resolved_speaker_wav,
+                    )
+                    synth_count += 1
+                    if raw_bytes is not None:
+                        _write_cached_raw(cache_path, raw_bytes)
                 if raw_bytes is None:
                     failed_count += 1
+                    if m["text"].strip():
+                        consecutive_failures += 1
+                        if consecutive_failures >= _MAX_CONSECUTIVE_TTS_FAILURES:
+                            raise RuntimeError(
+                                "TTS backend failed repeatedly; saved phrase cache so the next run can resume"
+                            )
+                else:
+                    consecutive_failures = 0
                 seg_audio, seg_speed_factor, seg_raw_duration = _postprocess_segment(
                     raw_bytes, m["target_sec"], m["stretch_factor"],
                     use_alignment, tmpdir,
@@ -794,14 +845,17 @@ def text_file_to_speech(
                 combined += seg_audio
                 cursor_ms += len(seg_audio)
 
-        save_path = pathlib.Path(output_path) / save_name
         combined.export(str(save_path), format="wav")
 
     stem = pathlib.Path(source_path).stem
     _write_align_report(str(output_path), stem, _metrics_list, _aligned_list, segment_details)
 
     if not use_synced_helper:
-        print(f" ({synth_count} phrase groups synthesized, {failed_count} silent fallbacks)", end="")
+        print(
+            f" ({synth_count} phrase groups synthesized, {cache_hit_count} cache hits, "
+            f"{failed_count} silent fallbacks)",
+            end="",
+        )
     print("success!")
     return None
 
