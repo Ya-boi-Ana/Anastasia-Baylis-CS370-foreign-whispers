@@ -20,8 +20,7 @@ export function VideoCanvas({
   activeVariantId,
   onSelectVariant,
 }: VideoCanvasProps) {
-  const { videoId, variants, status } = pipelineState;
-  const isComplete = status === "complete";
+  const { videoId, variants } = pipelineState;
   const videoVariants = variants.filter(
     (v) => v.sourceVideoId === videoId && v.status === "complete"
   );
@@ -30,7 +29,7 @@ export function VideoCanvas({
   const configId = activeVariant?.configId ?? "";
 
   // Determine what to show in the canvas
-  const showDubbed = isComplete && activeVariantId !== "original";
+  const showDubbed = activeVariant?.status === "complete" && activeVariantId !== "original";
   const videoSrc = videoId
     ? showDubbed && configId
       ? getVideoUrl(videoId, configId)

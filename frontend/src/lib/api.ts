@@ -5,6 +5,7 @@ import type {
   TTSResponse,
   StitchResponse,
   DiarizeResponse,
+  VideoVariant,
 } from "./types";
 
 class ApiError extends Error {
@@ -76,6 +77,10 @@ export async function stitchVideo(
     `/api/stitch/${videoId}?config=${config}`,
     { method: "POST" }
   );
+}
+
+export async function listVariants(): Promise<VideoVariant[]> {
+  return fetchJson<VideoVariant[]>("/api/variants");
 }
 
 export function getVideoUrl(videoId: string, config: string): string {

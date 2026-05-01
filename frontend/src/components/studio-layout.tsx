@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import type { Video } from "@/lib/types";
+import type { Video, VideoVariant } from "@/lib/types";
 import { usePipeline } from "@/hooks/use-pipeline";
 import { useStudioSettingsContext } from "@/contexts/studio-settings-context";
 import { AppSidebar } from "./app-sidebar";
@@ -14,15 +14,19 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/s
 
 interface StudioLayoutProps {
   videos: Video[];
+  initialVariants: VideoVariant[];
 }
 
-export function StudioLayout({ videos }: StudioLayoutProps) {
+export function StudioLayout({ videos, initialVariants }: StudioLayoutProps) {
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(
     videos[0]?.id ?? null
   );
   const selectedVideo = videos.find((v) => v.id === selectedVideoId) ?? null;
   const { settings } = useStudioSettingsContext();
-  const { state, runPipeline, selectVariant, reset } = usePipeline();
+  const { state, runPipeline, selectVariant, reset } = usePipeline(
+    initialVariants,
+    selectedVideoId ?? undefined,
+  );
 
   const handleStartPipeline = () => {
     if (!selectedVideo) return;
@@ -31,7 +35,7 @@ export function StudioLayout({ videos }: StudioLayoutProps) {
 
   const handleSelectVideo = useCallback((videoId: string) => {
     setSelectedVideoId(videoId);
-    reset();
+    reset(videoId);
   }, [reset]);
 
   return (

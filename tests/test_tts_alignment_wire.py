@@ -262,3 +262,33 @@ def test_shorten_segment_text_fallback_on_exception():
         from api.src.services.tts_engine import _shorten_segment_text
         result = _shorten_segment_text("source", "target", 2.0)
         assert result == "target"
+
+
+def test_chatterbox_client_retries_transient_failures(monkeypatch):
+    """Chatterbox calls should retry so long videos survive transient timeouts."""
+    import requests
+    import api.src.services.tts_engine as tts
+    from api.src.services.tts_engine import ChatterboxClient
+
+    calls = {"count": 0}
+
+    class Response:
+        content = b"RIFF-data"
+
+        def raise_for_status(self):
+            return None
+
+    def fake_post(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise requests.Timeout("slow chunk")
+        return Response()
+
+    monkeypatch.setattr(tts, "_TTS_RETRIES", 2)
+    monkeypatch.setattr(tts, "_TTS_RETRY_BACKOFF_SEC", 0)
+    monkeypatch.setattr("api.src.services.tts_engine.requests.post", fake_post)
+
+    data = ChatterboxClient(base_url="http://tts")._synthesize_default("hola")
+
+    assert data == b"RIFF-data"
+    assert calls["count"] == 2

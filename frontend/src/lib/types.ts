@@ -94,7 +94,7 @@ export interface VideoVariant {
   sourceVideoId: string;
   configId: string;
   label: string;
-  settings: StudioSettings;
+  settings?: StudioSettings;
   status: "complete" | "processing" | "error";
 }
 

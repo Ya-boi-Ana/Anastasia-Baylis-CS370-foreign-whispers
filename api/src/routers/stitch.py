@@ -10,12 +10,50 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 
 from api.src.core.config import settings
 from api.src.core.dependencies import resolve_title
+from api.src.core.video_registry import get_all_videos
 from api.src.services.stitch_service import StitchService
 
 router = APIRouter(prefix="/api")
 
 _stitch_service = StitchService(ui_dir=settings.data_dir)
 _CAPTION_HEADERS = {"Cache-Control": "no-store"}
+
+
+def _completed_variants() -> list[dict]:
+    """Discover completed dubbed videos from the output directory."""
+    by_title = {v.title: v for v in get_all_videos()}
+    variants: list[dict] = []
+    if not settings.dubbed_videos_dir.exists():
+        return variants
+
+    for config_dir in sorted(settings.dubbed_videos_dir.glob("c-*")):
+        if not config_dir.is_dir():
+            continue
+        config_id = config_dir.name
+        for mp4_path in sorted(config_dir.glob("*.mp4")):
+            entry = by_title.get(mp4_path.stem)
+            if entry is None:
+                continue
+            variants.append({
+                "id": f"{entry.id}::{config_id}",
+                "sourceVideoId": entry.id,
+                "configId": config_id,
+                "label": config_id,
+                "settings": {
+                    "dubbing": [],
+                    "diarization": [],
+                    "voiceCloning": [],
+                    "useYoutubeCaptions": True,
+                },
+                "status": "complete",
+            })
+    return variants
+
+
+@router.get("/variants")
+async def list_variants():
+    """Return completed dubbed-video variants available on disk."""
+    return _completed_variants()
 
 
 def _segments_to_vtt(segments: list[dict]) -> str:

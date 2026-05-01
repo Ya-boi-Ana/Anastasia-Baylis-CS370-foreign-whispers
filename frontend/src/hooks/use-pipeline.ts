@@ -34,12 +34,20 @@ function initialStages(): Record<PipelineStage, StageState> {
   ) as Record<PipelineStage, StageState>;
 }
 
-const INITIAL_STATE: PipelineState = {
+interface InitialPipelineArgs {
+  variants: VideoVariant[];
+  videoId?: string;
+}
+
+function makeInitialState(args: InitialPipelineArgs = { variants: [] }): PipelineState {
+  return {
   status: "idle",
   stages: initialStages(),
   selectedStage: "download",
-  variants: [],
-};
+    videoId: args.videoId,
+    variants: args.variants,
+  };
+}
 
 function makeVariantId(videoId: string, configId: string): string {
   return `${videoId}::${configId}`;
@@ -53,12 +61,17 @@ type Action =
   | { type: "SELECT_STAGE"; stage: PipelineStage }
   | { type: "PIPELINE_COMPLETE" }
   | { type: "SELECT_VARIANT"; variantId: string }
-  | { type: "RESET" };
+  | { type: "RESET"; videoId?: string };
 
 function reducer(state: PipelineState, action: Action): PipelineState {
   switch (action.type) {
     case "RESET":
-      return INITIAL_STATE;
+      return {
+        ...makeInitialState({
+          variants: state.variants.filter((v) => v.status === "complete"),
+          videoId: action.videoId,
+        }),
+      };
 
     case "START": {
       const newVariants: VideoVariant[] = action.configs.map((cfg) => ({
@@ -145,8 +158,12 @@ function reducer(state: PipelineState, action: Action): PipelineState {
   }
 }
 
-export function usePipeline() {
-  const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
+export function usePipeline(initialVariants: VideoVariant[] = [], initialVideoId?: string) {
+  const [state, dispatch] = useReducer(
+    reducer,
+    { variants: initialVariants, videoId: initialVideoId },
+    makeInitialState,
+  );
 
   const selectStage = useCallback(
     (stage: PipelineStage) => dispatch({ type: "SELECT_STAGE", stage }),
@@ -225,7 +242,7 @@ export function usePipeline() {
     }
   }, []);
 
-  const reset = useCallback(() => dispatch({ type: "RESET" }), []);
+  const reset = useCallback((videoId?: string) => dispatch({ type: "RESET", videoId }), []);
 
   return { state, runPipeline, selectStage, selectVariant, reset };
 }

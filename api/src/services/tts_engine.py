@@ -7,6 +7,7 @@ import glob
 import re
 import subprocess
 import tempfile
+import time
 
 import requests
 import librosa
@@ -37,6 +38,10 @@ _SPEED_MAX_LEGACY = 10.0
 _MIN_SEGMENT_TARGET_SEC = 0.25
 _TIMING_MODEL = "non_overlapping_phrase_groups_v1"
 _MAX_SYNTH_GROUP_SEC = 6.0
+_TTS_CONNECT_TIMEOUT = float(os.getenv("FW_TTS_CONNECT_TIMEOUT", "5"))
+_TTS_READ_TIMEOUT = float(os.getenv("FW_TTS_READ_TIMEOUT", "180"))
+_TTS_RETRIES = int(os.getenv("FW_TTS_RETRIES", "3"))
+_TTS_RETRY_BACKOFF_SEC = float(os.getenv("FW_TTS_RETRY_BACKOFF_SEC", "1.5"))
 
 
 class ChatterboxClient:
@@ -84,22 +89,10 @@ class ChatterboxClient:
 
     def _synthesize_default(self, text: str) -> bytes:
         """Call /v1/audio/speech with the server's default voice."""
-        import sys
-        try:
-            print(f"[tts._synthesize_default] POST to {self.base_url}/v1/audio/speech with text: {text[:50]}", file=sys.stderr)
-            resp = requests.post(
-                f"{self.base_url}/v1/audio/speech",
-                json={"input": text, "response_format": "wav"},
-                timeout=(5, 60),
-            )
-            print(f"[tts._synthesize_default] Response status: {resp.status_code}, content-length: {len(resp.content)}", file=sys.stderr)
-            resp.raise_for_status()
-            return resp.content
-        except Exception as e:
-            import traceback
-            print(f"[tts._synthesize_default] ERROR: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
-            raise
+        return self._request_with_retries(
+            f"{self.base_url}/v1/audio/speech",
+            json={"input": text, "response_format": "wav"},
+        )
 
     def _synthesize_with_voice(self, text: str, speaker_wav: str) -> bytes:
         """Call /v1/audio/speech/upload with a reference WAV for voice cloning."""
@@ -116,14 +109,37 @@ class ChatterboxClient:
             return self._synthesize_default(text)
 
         with open(wav_path, "rb") as f:
-            resp = requests.post(
+            return self._request_with_retries(
                 f"{self.base_url}/v1/audio/speech/upload",
                 data={"input": text, "response_format": "wav"},
                 files={"voice_file": (wav_path.name, f, "audio/wav")},
-                timeout=(5, 60),
             )
-        resp.raise_for_status()
-        return resp.content
+
+    def _request_with_retries(self, url: str, **kwargs) -> bytes:
+        """POST to Chatterbox with retries and a longer read timeout."""
+        last_exc: Exception | None = None
+        timeout = (_TTS_CONNECT_TIMEOUT, _TTS_READ_TIMEOUT)
+
+        for attempt in range(1, _TTS_RETRIES + 1):
+            try:
+                resp = requests.post(url, timeout=timeout, **kwargs)
+                resp.raise_for_status()
+                if not resp.content:
+                    raise ValueError("empty TTS response")
+                return resp.content
+            except Exception as exc:
+                last_exc = exc
+                _logging.getLogger(__name__).warning(
+                    "[tts] Chatterbox request failed (attempt %s/%s): %s",
+                    attempt,
+                    _TTS_RETRIES,
+                    exc,
+                )
+                if attempt < _TTS_RETRIES:
+                    time.sleep(_TTS_RETRY_BACKOFF_SEC * attempt)
+
+        assert last_exc is not None
+        raise last_exc
 
     @staticmethod
     def _split_text(text: str, max_len: int = 200) -> list[str]:
@@ -688,60 +704,36 @@ def text_file_to_speech(
     # ── Phase 1: GPU synthesis (concurrent) ───────────────────────────
     # Submit all TTS calls to a thread pool so the GPU stays busy while
     # previous results are being downloaded / decoded.
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    _TTS_WORKERS = int(os.getenv("FW_TTS_WORKERS", "1"))
-
-    raw_wav_map: dict[int, bytes | None] = {}
     speakers_base = pathlib.Path(__file__).parent.parent.parent.parent / "pipeline_data" / "speakers"
     target_language = es_transcript.get("language", "")
     video_path = pathlib.Path(source_path).parent.parent.parent / "videos" / f"{pathlib.Path(source_path).stem}.mp4"
     use_synced_helper = hasattr(_synced_segment_audio, "mock_calls")
 
-    if not use_synced_helper:
-        with tempfile.TemporaryDirectory() as synth_dir:
-            ref_dir = pathlib.Path(synth_dir) / "speaker_refs"
-
-            def _speaker_reference(m: dict) -> str | None:
-                if not voice_cloning:
-                    return None
-                if speaker_wav:
-                    return speaker_wav
-                try:
-                    return resolve_speaker_wav(speakers_base, target_language, m.get("speaker"))
-                except FileNotFoundError:
-                    ref_path = _extract_segment_reference(
-                        video_path,
-                        m["start"],
-                        m["end"],
-                        ref_dir / f"seg_{m['index']}.wav",
-                    )
-                    return str(ref_path) if ref_path else None
-
-            def _do_synth(idx: int, text: str, speaker_wav: str | None) -> tuple[int, bytes | None]:
-                wav_path = str(pathlib.Path(synth_dir) / f"seg_{idx}.wav")
-                return idx, _synthesize_raw(engine, text, wav_path, speaker_wav=speaker_wav)
-
-            with ThreadPoolExecutor(max_workers=_TTS_WORKERS) as pool:
-                futures = {
-                    pool.submit(
-                        _do_synth,
-                        m["index"],
-                        m["text"],
-                        _speaker_reference(m),
-                    ): m["index"]
-                    for m in synth_metas
-                }
-                for fut in as_completed(futures):
-                    idx, raw_bytes = fut.result()
-                    raw_wav_map[idx] = raw_bytes
-
-    print(f" ({len(synth_metas)} phrase groups synthesized)", end="")
+    synth_count = 0
+    failed_count = 0
 
     # ── Phase 2: CPU post-processing (sequential assembly) ────────────
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as synth_dir:
         combined = AudioSegment.empty()
         cursor_ms = 0
         segment_details = []
+        ref_dir = pathlib.Path(synth_dir) / "speaker_refs"
+
+        def _speaker_reference(m: dict) -> str | None:
+            if not voice_cloning:
+                return None
+            if speaker_wav:
+                return speaker_wav
+            try:
+                return resolve_speaker_wav(speakers_base, target_language, m.get("speaker"))
+            except FileNotFoundError:
+                ref_path = _extract_segment_reference(
+                    video_path,
+                    m["start"],
+                    m["end"],
+                    ref_dir / f"seg_{m['index']}.wav",
+                )
+                return str(ref_path) if ref_path else None
 
         for m in synth_metas:
             i = m["index"]
@@ -756,8 +748,18 @@ def text_file_to_speech(
                     engine, m["text"], m["target_sec"], tmpdir, stretch_factor=m["stretch_factor"],
                 )
             else:
+                wav_path = str(pathlib.Path(synth_dir) / f"seg_{i}.wav")
+                raw_bytes = _synthesize_raw(
+                    engine,
+                    m["text"],
+                    wav_path,
+                    speaker_wav=_speaker_reference(m),
+                )
+                synth_count += 1
+                if raw_bytes is None:
+                    failed_count += 1
                 seg_audio, seg_speed_factor, seg_raw_duration = _postprocess_segment(
-                    raw_wav_map[i], m["target_sec"], m["stretch_factor"],
+                    raw_bytes, m["target_sec"], m["stretch_factor"],
                     use_alignment, tmpdir,
                 )
 
@@ -783,6 +785,8 @@ def text_file_to_speech(
     stem = pathlib.Path(source_path).stem
     _write_align_report(str(output_path), stem, _metrics_list, _aligned_list, segment_details)
 
+    if not use_synced_helper:
+        print(f" ({synth_count} phrase groups synthesized, {failed_count} silent fallbacks)", end="")
     print("success!")
     return None
 

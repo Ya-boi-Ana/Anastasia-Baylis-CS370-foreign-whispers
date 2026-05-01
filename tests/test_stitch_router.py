@@ -155,6 +155,28 @@ def test_get_video_not_found(client, monkeypatch, ui_dir):
     assert resp.status_code == 404
 
 
+def test_list_variants_discovers_completed_outputs(client, monkeypatch, ui_dir):
+    """GET /api/variants should restore completed dubbed videos for the frontend."""
+    from api.src.core.video_registry import VideoEntry
+
+    config_dir = ui_dir / "dubbed_videos" / "c-0000000"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "Test Title.mp4").write_bytes(b"fake-mp4")
+
+    monkeypatch.setattr(
+        "api.src.routers.stitch.get_all_videos",
+        lambda: [VideoEntry(id="G3Eup4mfJdA", title="Test Title", url="https://example.com")],
+    )
+
+    resp = client.get("/api/variants")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body[0]["id"] == "G3Eup4mfJdA::c-0000000"
+    assert body[0]["sourceVideoId"] == "G3Eup4mfJdA"
+    assert body[0]["status"] == "complete"
+
+
 def test_segments_to_vtt_does_not_repeat_previous_caption():
     """Generated WebVTT cues should not create duplicate rolling captions."""
     from api.src.routers.stitch import _segments_to_vtt
