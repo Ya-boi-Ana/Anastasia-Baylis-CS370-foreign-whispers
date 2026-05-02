@@ -30,8 +30,30 @@ def test_torchaudio_pyannote_compat_patch(monkeypatch):
     mod._patch_torchaudio_for_pyannote()
 
     assert hasattr(fake_torchaudio, "AudioMetaData")
+    assert hasattr(fake_torchaudio, "info")
     assert fake_torchaudio.list_audio_backends() == ["soundfile"]
     fake_torchaudio.set_audio_backend("soundfile")
+
+
+def test_pyannote_torch_load_compat_sets_weights_only_false(monkeypatch):
+    import sys
+    import types
+    import foreign_whispers.diarization as mod
+
+    calls = []
+
+    def fake_load(*args, **kwargs):
+        calls.append(kwargs)
+        return "checkpoint"
+
+    fake_torch = types.SimpleNamespace(load=fake_load)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    with mod._pyannote_torch_load_compat():
+        assert fake_torch.load("model.ckpt", weights_only=True) == "checkpoint"
+
+    assert calls == [{"weights_only": False}]
+    assert fake_torch.load is fake_load
 
 
 def test_returns_empty_when_pyannote_absent(monkeypatch):

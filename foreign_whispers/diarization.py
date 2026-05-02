@@ -1,6 +1,7 @@
 """Speaker diarization using pyannote.audio."""
 
 import logging
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -13,11 +14,62 @@ def _patch_torchaudio_for_pyannote() -> None:
         return
 
     if not hasattr(torchaudio, "AudioMetaData"):
-        torchaudio.AudioMetaData = type("AudioMetaData", (), {})
+        class AudioMetaData:
+            def __init__(
+                self,
+                sample_rate: int,
+                num_frames: int,
+                num_channels: int,
+                bits_per_sample: int = 0,
+                encoding: str = "UNKNOWN",
+            ):
+                self.sample_rate = sample_rate
+                self.num_frames = num_frames
+                self.num_channels = num_channels
+                self.bits_per_sample = bits_per_sample
+                self.encoding = encoding
+
+        torchaudio.AudioMetaData = AudioMetaData
+    if not hasattr(torchaudio, "info"):
+        def info(path, *args, **kwargs):
+            import soundfile as sf
+
+            sf_info = sf.info(path)
+            return torchaudio.AudioMetaData(
+                sample_rate=int(sf_info.samplerate),
+                num_frames=int(sf_info.frames),
+                num_channels=int(sf_info.channels),
+                bits_per_sample=0,
+                encoding=str(sf_info.subtype or "UNKNOWN"),
+            )
+
+        torchaudio.info = info
     if not hasattr(torchaudio, "list_audio_backends"):
         torchaudio.list_audio_backends = lambda: ["soundfile"]
     if not hasattr(torchaudio, "set_audio_backend"):
         torchaudio.set_audio_backend = lambda backend: None
+
+
+@contextmanager
+def _pyannote_torch_load_compat():
+    """Load trusted pyannote checkpoints with PyTorch 2.6+ compatibility."""
+    try:
+        import torch
+    except Exception:
+        yield
+        return
+
+    original_load = torch.load
+
+    def compat_load(*args, **kwargs):
+        kwargs["weights_only"] = False
+        return original_load(*args, **kwargs)
+
+    torch.load = compat_load
+    try:
+        yield
+    finally:
+        torch.load = original_load
 
 
 def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
@@ -33,10 +85,11 @@ def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
         return []
 
     try:
-        pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token,
-        )
+        with _pyannote_torch_load_compat():
+            pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                use_auth_token=hf_token,
+            )
         if pipeline is None:
             logger.warning(
                 "Could not load pyannote/speaker-diarization-3.1. "

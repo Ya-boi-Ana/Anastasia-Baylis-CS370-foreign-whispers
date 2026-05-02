@@ -38,6 +38,7 @@ alignment = [
     "logfire",
     "silero-vad",
     "pyannote.audio",
+    "torchcodec>=0.10,<0.11",
 ]
 
 [tool.uv]
