@@ -18,6 +18,33 @@ router = APIRouter(prefix="/api")
 _alignment_service = AlignmentService(settings=settings)
 
 
+def _probe_media_duration_seconds(path) -> float | None:
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return float(result.stdout.strip())
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+
+
+def _diarization_too_long(duration_s: float | None) -> bool:
+    limit_s = float(getattr(settings, "diarization_max_seconds", 0.0) or 0.0)
+    return bool(limit_s > 0 and duration_s is not None and duration_s > limit_s)
+
+
 def _speaker_namespace(title: str) -> str:
     return _speaker_filename(title)
 
@@ -142,6 +169,15 @@ async def diarize_endpoint(video_id: str):
     video_path = settings.videos_dir / f"{title}.mp4"
     if not video_path.exists():
         raise HTTPException(status_code=404, detail=f"Video file for {video_id} not found")
+
+    duration_s = await asyncio.to_thread(_probe_media_duration_seconds, video_path)
+    if _diarization_too_long(duration_s):
+        return DiarizeResponse(
+            video_id=video_id,
+            speakers=[],
+            segments=[],
+            skipped=True,
+        )
 
     audio_path = diar_dir / f"{title}.wav"
     try:

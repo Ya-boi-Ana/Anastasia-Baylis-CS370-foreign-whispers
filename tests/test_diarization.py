@@ -177,3 +177,28 @@ def test_extract_speaker_references_overwrites_video_namespace_only(tmp_path, mo
     assert stale.read_bytes() == b"RIFF" + b"old"
     assert (speakers_dir / "Demo__SPEAKER_00.wav").read_bytes() == b"RIFF" + b"new"
     assert len(calls) == 1
+
+
+def test_diarize_endpoint_skips_videos_above_duration_limit(tmp_path, monkeypatch):
+    import asyncio
+    import api.src.routers.diarize as mod
+
+    data_dir = tmp_path / "api"
+    videos = data_dir / "videos"
+    videos.mkdir(parents=True)
+    (videos / "Demo.mp4").write_bytes(b"video")
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("ffmpeg should not run when duration limit is exceeded")
+
+    monkeypatch.setattr(mod.settings, "data_dir", data_dir)
+    monkeypatch.setattr(mod.settings, "diarization_max_seconds", 10.0)
+    monkeypatch.setattr(mod, "resolve_title", lambda video_id: "Demo")
+    monkeypatch.setattr(mod, "_probe_media_duration_seconds", lambda path: 11.0)
+    monkeypatch.setattr(mod.subprocess, "run", fail_run)
+
+    response = asyncio.run(mod.diarize_endpoint("demo-id"))
+
+    assert response.skipped is True
+    assert response.segments == []
+    assert response.speakers == []
