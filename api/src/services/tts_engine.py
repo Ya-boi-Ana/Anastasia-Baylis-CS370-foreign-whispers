@@ -53,6 +53,12 @@ _EXTRACT_SEGMENT_VOICE_REFS = os.getenv("FW_TTS_EXTRACT_SEGMENT_VOICE_REFS", "fa
     "yes",
     "on",
 }
+_AUTO_VOICE_CLONING = os.getenv("FW_TTS_AUTO_VOICE_CLONING", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 class ChatterboxClient:
@@ -871,6 +877,8 @@ def text_file_to_speech(
                 return None
             if speaker_wav:
                 return speaker_wav
+            if not _AUTO_VOICE_CLONING:
+                return None
             try:
                 return resolve_speaker_wav(speakers_base, target_language, m.get("speaker"))
             except FileNotFoundError:

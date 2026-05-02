@@ -334,6 +334,70 @@ def test_text_file_to_speech_does_not_extract_segment_refs_by_default(tmp_path):
     assert speaker_wavs == [None]
 
 
+def test_text_file_to_speech_does_not_auto_upload_resolved_refs_by_default(tmp_path):
+    """Diarized voice cloning defaults to stable non-upload synthesis."""
+    from api.src.services.tts_engine import text_file_to_speech
+
+    es_dir = tmp_path / "translations" / "argos"
+    es_dir.mkdir(parents=True)
+    title = "voice_resolved_default"
+    es_path = es_dir / f"{title}.json"
+    es_path.write_text(json.dumps({
+        "language": "es",
+        "text": "Hola",
+        "segments": [{"start": 0.0, "end": 1.0, "text": "Hola", "speaker": "SPEAKER_00"}],
+    }))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    speaker_wavs = []
+
+    class Engine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            speaker_wavs.append(kwargs.get("speaker_wav"))
+            from pydub import AudioSegment
+            AudioSegment.silent(duration=500).export(file_path, format="wav")
+
+    with patch("api.src.services.tts_engine.resolve_speaker_wav", return_value="es/SPEAKER_00.wav"):
+        text_file_to_speech(str(es_path), str(out_dir), tts_engine=Engine(), voice_cloning=True)
+
+    assert speaker_wavs == [None]
+
+
+def test_text_file_to_speech_uses_explicit_speaker_wav(tmp_path):
+    from api.src.services.tts_engine import text_file_to_speech
+
+    es_dir = tmp_path / "translations" / "argos"
+    es_dir.mkdir(parents=True)
+    title = "explicit_voice"
+    es_path = es_dir / f"{title}.json"
+    es_path.write_text(json.dumps({
+        "language": "es",
+        "text": "Hola",
+        "segments": [{"start": 0.0, "end": 1.0, "text": "Hola", "speaker": "SPEAKER_00"}],
+    }))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    speaker_wavs = []
+
+    class Engine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            speaker_wavs.append(kwargs.get("speaker_wav"))
+            from pydub import AudioSegment
+            AudioSegment.silent(duration=500).export(file_path, format="wav")
+
+    text_file_to_speech(
+        str(es_path),
+        str(out_dir),
+        tts_engine=Engine(),
+        voice_cloning=True,
+        speaker_wav="es/SPEAKER_00.wav",
+    )
+
+    assert speaker_wavs == ["es/SPEAKER_00.wav"]
+
+
 def test_text_file_to_speech_reuses_raw_phrase_cache(tmp_path):
     from api.src.services.tts_engine import text_file_to_speech
 
