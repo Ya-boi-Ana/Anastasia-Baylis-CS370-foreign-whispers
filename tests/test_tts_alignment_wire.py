@@ -438,6 +438,42 @@ def test_text_file_to_speech_reuses_raw_phrase_cache(tmp_path):
     assert calls["count"] == 1
 
 
+def test_text_file_to_speech_caps_new_synthesis_for_long_form(tmp_path, monkeypatch):
+    from api.src.services import tts_engine
+    from api.src.services.tts_engine import text_file_to_speech
+
+    monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_GROUP_THRESHOLD", 2)
+    monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_MAX_NEW_GROUPS", 1)
+
+    es_dir = tmp_path / "translations" / "argos"
+    es_dir.mkdir(parents=True)
+    title = "long_form_cap"
+    es_path = es_dir / f"{title}.json"
+    es_path.write_text(json.dumps({
+        "language": "es",
+        "text": "Uno. Dos. Tres.",
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "Uno."},
+            {"start": 1.0, "end": 2.0, "text": "Dos."},
+            {"start": 2.0, "end": 3.0, "text": "Tres."},
+        ],
+    }))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    calls = {"count": 0}
+
+    class Engine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            calls["count"] += 1
+            from pydub import AudioSegment
+            AudioSegment.silent(duration=500).export(file_path, format="wav")
+
+    text_file_to_speech(str(es_path), str(out_dir), tts_engine=Engine())
+
+    assert calls["count"] == 1
+    assert (out_dir / f"{title}.wav").exists()
+
+
 def test_parallel_raw_synthesis_serializes_voice_uploads(tmp_path):
     from api.src.services.tts_engine import _synthesize_pending_raw
 

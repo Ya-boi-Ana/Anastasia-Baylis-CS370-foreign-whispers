@@ -52,6 +52,8 @@ _TTS_FAIL_FAST = os.getenv("FW_TTS_FAIL_FAST", "false").lower() in {
     "on",
 }
 _TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "2")))
+_TTS_LONG_FORM_GROUP_THRESHOLD = int(os.getenv("FW_TTS_LONG_FORM_GROUP_THRESHOLD", "500"))
+_TTS_LONG_FORM_MAX_NEW_GROUPS = int(os.getenv("FW_TTS_LONG_FORM_MAX_NEW_GROUPS", "200"))
 _SYNTH_CACHE_VERSION = "v2"
 _EXTRACT_SEGMENT_VOICE_REFS = os.getenv("FW_TTS_EXTRACT_SEGMENT_VOICE_REFS", "false").lower() in {
     "1",
@@ -881,6 +883,12 @@ def text_file_to_speech(
         })
 
     synth_metas = _group_segment_metas(seg_metas)
+    long_form_cap = (
+        _TTS_LONG_FORM_MAX_NEW_GROUPS
+        if _TTS_LONG_FORM_GROUP_THRESHOLD > 0
+        and len(synth_metas) > _TTS_LONG_FORM_GROUP_THRESHOLD
+        else 0
+    )
 
     # ── Phase 1: GPU synthesis (concurrent) ───────────────────────────
     # Submit all TTS calls to a thread pool so the GPU stays busy while
@@ -928,6 +936,7 @@ def text_file_to_speech(
         speaker_by_index: dict[int, str | None] = {}
         if not use_synced_helper:
             pending_synth: list[dict] = []
+            skipped_by_cap_count = 0
             for m in synth_metas:
                 i = m["index"]
                 resolved_speaker_wav = _speaker_reference(m)
@@ -939,6 +948,11 @@ def text_file_to_speech(
                     raw_by_index[i] = raw_bytes
                     continue
 
+                if long_form_cap and len(pending_synth) >= long_form_cap:
+                    raw_by_index[i] = None
+                    skipped_by_cap_count += 1
+                    continue
+
                 pending_synth.append({
                     "index": i,
                     "text": m["text"],
@@ -948,6 +962,12 @@ def text_file_to_speech(
                 })
 
             synth_count = len(pending_synth)
+            if skipped_by_cap_count:
+                print(
+                    f" (long-form cap: synthesizing {synth_count} new groups, "
+                    f"using timed silence for {skipped_by_cap_count})",
+                    end="",
+                )
             raw_by_index.update(_synthesize_pending_raw(engine, pending_synth))
 
         for m in synth_metas:
