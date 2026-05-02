@@ -59,6 +59,12 @@ _AUTO_VOICE_CLONING = os.getenv("FW_TTS_AUTO_VOICE_CLONING", "false").lower() in
     "yes",
     "on",
 }
+_SPEAKER_COLORING = os.getenv("FW_TTS_SPEAKER_COLORING", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 class ChatterboxClient:
@@ -539,6 +545,26 @@ def _group_segment_metas(seg_metas: list[dict]) -> list[dict]:
     return groups
 
 
+def _apply_speaker_color(audio: AudioSegment, speaker: str | None) -> AudioSegment:
+    """Give diarized speakers stable tonal differences without voice uploads."""
+    if not _SPEAKER_COLORING or not speaker:
+        return audio
+
+    digest = int(hashlib.sha256(speaker.encode("utf-8")).hexdigest()[:8], 16)
+    profile = digest % 6
+    if profile == 0:
+        return audio.high_pass_filter(140).apply_gain(0.8)
+    if profile == 1:
+        return audio.low_pass_filter(3400).apply_gain(-0.8)
+    if profile == 2:
+        return audio.high_pass_filter(220).low_pass_filter(4300).apply_gain(1.2)
+    if profile == 3:
+        return audio.low_pass_filter(2800).apply_gain(0.4)
+    if profile == 4:
+        return audio.high_pass_filter(100).apply_gain(-1.1)
+    return audio.high_pass_filter(180).low_pass_filter(3600)
+
+
 def _postprocess_segment(
     raw_wav_bytes: bytes | None,
     target_sec: float,
@@ -948,6 +974,8 @@ def text_file_to_speech(
                     raw_bytes, m["target_sec"], m["stretch_factor"],
                     use_alignment, tmpdir,
                 )
+                if voice_cloning and resolved_speaker_wav is None:
+                    seg_audio = _apply_speaker_color(seg_audio, m.get("speaker"))
 
             aligned_seg = m["aligned_seg"]
             segment_details.append({

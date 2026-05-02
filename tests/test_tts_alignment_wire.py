@@ -364,6 +364,16 @@ def test_text_file_to_speech_does_not_auto_upload_resolved_refs_by_default(tmp_p
     assert speaker_wavs == [None]
 
 
+def test_speaker_color_preserves_duration():
+    from pydub import AudioSegment
+    from api.src.services.tts_engine import _apply_speaker_color
+
+    audio = AudioSegment.silent(duration=750)
+    colored = _apply_speaker_color(audio, "SPEAKER_00")
+
+    assert len(colored) == len(audio)
+
+
 def test_text_file_to_speech_uses_explicit_speaker_wav(tmp_path):
     from api.src.services.tts_engine import text_file_to_speech
 
