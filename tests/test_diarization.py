@@ -114,7 +114,7 @@ def test_merge_speakers_updates_translation_json(tmp_path, monkeypatch):
     mod._merge_speakers_into_transcript("Demo", diar)
 
     translated = json.loads((translations / "Demo.json").read_text())
-    assert translated["segments"][0]["speaker"] == "SPEAKER_01"
+    assert translated["segments"][0]["speaker"] == "Demo__SPEAKER_01"
 
 
 def test_extract_speaker_references_writes_one_ref_per_speaker(tmp_path, monkeypatch):
@@ -143,6 +143,37 @@ def test_extract_speaker_references_writes_one_ref_per_speaker(tmp_path, monkeyp
     ]))
 
     speakers_dir = tmp_path / "speakers" / "es"
-    assert (speakers_dir / "SPEAKER_00.wav").exists()
-    assert (speakers_dir / "SPEAKER_01.wav").exists()
+    assert (speakers_dir / "Demo__SPEAKER_00.wav").exists()
+    assert (speakers_dir / "Demo__SPEAKER_01.wav").exists()
     assert len(calls) == 2
+
+
+def test_extract_speaker_references_overwrites_video_namespace_only(tmp_path, monkeypatch):
+    import asyncio
+    import api.src.routers.diarize as mod
+
+    data_dir = tmp_path / "api"
+    videos = data_dir / "videos"
+    videos.mkdir(parents=True)
+    (videos / "Demo.mp4").write_bytes(b"video")
+    speakers_dir = tmp_path / "speakers" / "es"
+    speakers_dir.mkdir(parents=True)
+    stale = speakers_dir / "Other__SPEAKER_00.wav"
+    stale.write_bytes(b"RIFF" + b"old")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        from pathlib import Path
+        calls.append(cmd)
+        Path(cmd[-1]).write_bytes(b"RIFF" + b"new")
+
+    monkeypatch.setattr(mod.settings, "data_dir", data_dir)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    asyncio.run(mod._extract_speaker_references("Demo", [
+        {"start_s": 0.0, "end_s": 4.0, "speaker": "SPEAKER_00"},
+    ]))
+
+    assert stale.read_bytes() == b"RIFF" + b"old"
+    assert (speakers_dir / "Demo__SPEAKER_00.wav").read_bytes() == b"RIFF" + b"new"
+    assert len(calls) == 1

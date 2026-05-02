@@ -18,6 +18,22 @@ router = APIRouter(prefix="/api")
 _alignment_service = AlignmentService(settings=settings)
 
 
+def _speaker_namespace(title: str) -> str:
+    return _speaker_filename(title)
+
+
+def _namespaced_speaker(title: str, speaker: str) -> str:
+    return f"{_speaker_namespace(title)}__{_speaker_filename(speaker)}"
+
+
+def _namespace_diar_segments(title: str, diar_segments: list[dict]) -> list[dict]:
+    namespaced = []
+    for segment in diar_segments:
+        speaker = str(segment.get("speaker") or "SPEAKER_00")
+        namespaced.append({**segment, "speaker": _namespaced_speaker(title, speaker)})
+    return namespaced
+
+
 def _merge_speakers_into_json(path, diar_segments: list[dict]) -> None:
     """Persist speaker labels onto transcript-like JSON segments."""
     if not path.exists() or not diar_segments:
@@ -29,8 +45,9 @@ def _merge_speakers_into_json(path, diar_segments: list[dict]) -> None:
 
 def _merge_speakers_into_transcript(title: str, diar_segments: list[dict]) -> None:
     """Persist speaker labels onto files used by translation/TTS."""
-    _merge_speakers_into_json(settings.transcriptions_dir / f"{title}.json", diar_segments)
-    _merge_speakers_into_json(settings.translations_dir / f"{title}.json", diar_segments)
+    namespaced_segments = _namespace_diar_segments(title, diar_segments)
+    _merge_speakers_into_json(settings.transcriptions_dir / f"{title}.json", namespaced_segments)
+    _merge_speakers_into_json(settings.translations_dir / f"{title}.json", namespaced_segments)
 
 
 def _speaker_filename(speaker: str) -> str:
@@ -61,9 +78,7 @@ async def _extract_speaker_references(title: str, diar_segments: list[dict], tar
             best_by_speaker[speaker] = {**segment, "duration": duration}
 
     for speaker, segment in best_by_speaker.items():
-        output_path = speakers_dir / f"{_speaker_filename(speaker)}.wav"
-        if output_path.exists() and output_path.stat().st_size > 44:
-            continue
+        output_path = speakers_dir / f"{_namespaced_speaker(title, speaker)}.wav"
 
         start_s = max(0.0, float(segment.get("start_s", 0.0)))
         duration_s = min(8.0, max(3.0, float(segment["duration"])))
