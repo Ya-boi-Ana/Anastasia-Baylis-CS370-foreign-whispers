@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import librosa
@@ -44,6 +45,7 @@ _TTS_READ_TIMEOUT = float(os.getenv("FW_TTS_READ_TIMEOUT", "180"))
 _TTS_RETRIES = int(os.getenv("FW_TTS_RETRIES", "3"))
 _TTS_RETRY_BACKOFF_SEC = float(os.getenv("FW_TTS_RETRY_BACKOFF_SEC", "1.5"))
 _MAX_CONSECUTIVE_TTS_FAILURES = int(os.getenv("FW_TTS_MAX_CONSECUTIVE_FAILURES", "5"))
+_TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "2")))
 _SYNTH_CACHE_VERSION = "v2"
 _EXTRACT_SEGMENT_VOICE_REFS = os.getenv("FW_TTS_EXTRACT_SEGMENT_VOICE_REFS", "false").lower() in {
     "1",
@@ -315,9 +317,54 @@ def _read_cached_raw(cache_path: pathlib.Path) -> bytes | None:
 
 def _write_cached_raw(cache_path: pathlib.Path, raw_bytes: bytes) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
-    tmp_path.write_bytes(raw_bytes)
+    with tempfile.NamedTemporaryFile(
+        dir=cache_path.parent,
+        prefix=f"{cache_path.stem}.",
+        suffix=".tmp",
+        delete=False,
+    ) as tmp:
+        tmp.write(raw_bytes)
+        tmp_path = pathlib.Path(tmp.name)
     tmp_path.replace(cache_path)
+
+
+def _synthesize_pending_raw(
+    tts_engine,
+    pending: list[dict],
+    max_workers: int = _TTS_CONCURRENCY,
+) -> dict[int, bytes | None]:
+    """Synthesize uncached phrase audio with bounded parallelism.
+
+    Results are keyed by phrase index so callers can still post-process and
+    assemble audio in transcript order.
+    """
+    results: dict[int, bytes | None] = {}
+    if not pending:
+        return results
+
+    workers = max(1, min(max_workers, len(pending)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_item = {
+            executor.submit(
+                _synthesize_raw,
+                tts_engine,
+                item["text"],
+                item["wav_path"],
+                speaker_wav=item["speaker_wav"],
+            ): item
+            for item in pending
+        }
+        for future in as_completed(future_to_item):
+            item = future_to_item[future]
+            try:
+                raw_bytes = future.result()
+            except Exception as exc:
+                print(f"[tts] TTS failed for segment ({exc}), using silence")
+                raw_bytes = None
+            if raw_bytes is not None:
+                _write_cached_raw(item["cache_path"], raw_bytes)
+            results[item["index"]] = raw_bytes
+    return results
 
 
 def _extract_segment_reference(
@@ -785,6 +832,32 @@ def text_file_to_speech(
                 )
                 return str(ref_path) if ref_path else None
 
+        raw_by_index: dict[int, bytes | None] = {}
+        speaker_by_index: dict[int, str | None] = {}
+        if not use_synced_helper:
+            pending_synth: list[dict] = []
+            for m in synth_metas:
+                i = m["index"]
+                resolved_speaker_wav = _speaker_reference(m)
+                speaker_by_index[i] = resolved_speaker_wav
+                cache_path = cache_dir / f"{_synth_cache_key(m, resolved_speaker_wav, use_alignment)}.wav"
+                raw_bytes = _read_cached_raw(cache_path)
+                if raw_bytes is not None:
+                    cache_hit_count += 1
+                    raw_by_index[i] = raw_bytes
+                    continue
+
+                pending_synth.append({
+                    "index": i,
+                    "text": m["text"],
+                    "speaker_wav": resolved_speaker_wav,
+                    "wav_path": str(pathlib.Path(synth_dir) / f"seg_{i}.wav"),
+                    "cache_path": cache_path,
+                })
+
+            synth_count = len(pending_synth)
+            raw_by_index.update(_synthesize_pending_raw(engine, pending_synth))
+
         for m in synth_metas:
             i = m["index"]
             start_ms = int((m["start"] + offset) * 1000)
@@ -799,22 +872,8 @@ def text_file_to_speech(
                     engine, m["text"], m["target_sec"], tmpdir, stretch_factor=m["stretch_factor"],
                 )
             else:
-                resolved_speaker_wav = _speaker_reference(m)
-                cache_path = cache_dir / f"{_synth_cache_key(m, resolved_speaker_wav, use_alignment)}.wav"
-                raw_bytes = _read_cached_raw(cache_path)
-                wav_path = str(pathlib.Path(synth_dir) / f"seg_{i}.wav")
-                if raw_bytes is not None:
-                    cache_hit_count += 1
-                else:
-                    raw_bytes = _synthesize_raw(
-                        engine,
-                        m["text"],
-                        wav_path,
-                        speaker_wav=resolved_speaker_wav,
-                    )
-                    synth_count += 1
-                    if raw_bytes is not None:
-                        _write_cached_raw(cache_path, raw_bytes)
+                resolved_speaker_wav = speaker_by_index.get(i)
+                raw_bytes = raw_by_index.get(i)
                 if raw_bytes is None:
                     failed_count += 1
                     if m["text"].strip():
