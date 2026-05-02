@@ -1,10 +1,13 @@
 """HTTP-agnostic service wrapping translation engine functions."""
 
 import copy
+import logging
 import pathlib
 from pathlib import Path
 
 from api.src.services import translation_engine as _te
+
+logger = logging.getLogger(__name__)
 
 
 def download_and_install_package(from_code: str, to_code: str):
@@ -26,11 +29,28 @@ class TranslationService:
 
     def install_language_pack(self, from_code: str, to_code: str) -> None:
         """Download and install the Argos Translate language pack."""
-        download_and_install_package(from_code, to_code)
+        try:
+            download_and_install_package(from_code, to_code)
+        except Exception as exc:
+            logger.warning(
+                "Translation language pack install failed for %s->%s; using best-effort translation: %s",
+                from_code,
+                to_code,
+                exc,
+            )
 
     def translate_sentence(self, text: str, from_code: str, to_code: str) -> str:
         """Translate a single sentence."""
-        return translate_sentence(text, from_code, to_code)
+        if not text:
+            return text
+        try:
+            return translate_sentence(text, from_code, to_code)
+        except Exception as exc:
+            logger.warning(
+                "Translation failed for one segment; preserving original text: %s",
+                exc,
+            )
+            return text
 
     def translate_transcript(self, transcript: dict, from_code: str, to_code: str) -> dict:
         """Translate all segments and full text in a transcript dict.
@@ -39,8 +59,8 @@ class TranslationService:
         """
         result = copy.deepcopy(transcript)
         for segment in result.get("segments", []):
-            segment["text"] = translate_sentence(segment["text"], from_code, to_code)
-        result["text"] = translate_sentence(result.get("text", ""), from_code, to_code)
+            segment["text"] = self.translate_sentence(segment.get("text", ""), from_code, to_code)
+        result["text"] = self.translate_sentence(result.get("text", ""), from_code, to_code)
         result["language"] = to_code
         return result
 

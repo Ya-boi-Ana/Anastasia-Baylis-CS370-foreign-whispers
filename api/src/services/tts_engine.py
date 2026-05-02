@@ -45,6 +45,12 @@ _TTS_READ_TIMEOUT = float(os.getenv("FW_TTS_READ_TIMEOUT", "180"))
 _TTS_RETRIES = int(os.getenv("FW_TTS_RETRIES", "3"))
 _TTS_RETRY_BACKOFF_SEC = float(os.getenv("FW_TTS_RETRY_BACKOFF_SEC", "1.5"))
 _MAX_CONSECUTIVE_TTS_FAILURES = int(os.getenv("FW_TTS_MAX_CONSECUTIVE_FAILURES", "5"))
+_TTS_FAIL_FAST = os.getenv("FW_TTS_FAIL_FAST", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 _TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "2")))
 _SYNTH_CACHE_VERSION = "v2"
 _EXTRACT_SEGMENT_VOICE_REFS = os.getenv("FW_TTS_EXTRACT_SEGMENT_VOICE_REFS", "false").lower() in {
@@ -398,7 +404,7 @@ def _synthesize_pending_raw(
             if raw_bytes is not None:
                 _write_cached_raw(item["cache_path"], raw_bytes)
                 consecutive_failures = 0
-            elif item["text"].strip():
+            elif _TTS_FAIL_FAST and item["text"].strip():
                 consecutive_failures += 1
                 if consecutive_failures >= max_consecutive_failures:
                     raise RuntimeError(
@@ -962,7 +968,7 @@ def text_file_to_speech(
                 raw_bytes = raw_by_index.get(i)
                 if raw_bytes is None:
                     failed_count += 1
-                    if m["text"].strip():
+                    if _TTS_FAIL_FAST and m["text"].strip():
                         consecutive_failures += 1
                         if consecutive_failures >= _MAX_CONSECUTIVE_TTS_FAILURES:
                             raise RuntimeError(

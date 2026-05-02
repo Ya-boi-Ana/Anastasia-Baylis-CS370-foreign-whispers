@@ -109,29 +109,32 @@ async def _extract_speaker_references(title: str, diar_segments: list[dict], tar
 
         start_s = max(0.0, float(segment.get("start_s", 0.0)))
         duration_s = min(8.0, max(3.0, float(segment["duration"])))
-        await asyncio.to_thread(
-            subprocess.run,
-            [
-                "ffmpeg",
-                "-y",
-                "-ss",
-                f"{start_s:.3f}",
-                "-i",
-                str(video_path),
-                "-t",
-                f"{duration_s:.3f}",
-                "-vn",
-                "-acodec",
-                "pcm_s16le",
-                "-ar",
-                "16000",
-                "-ac",
-                "1",
-                str(output_path),
-            ],
-            check=True,
-            capture_output=True,
-        )
+        try:
+            await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-ss",
+                    f"{start_s:.3f}",
+                    "-i",
+                    str(video_path),
+                    "-t",
+                    f"{duration_s:.3f}",
+                    "-vn",
+                    "-acodec",
+                    "pcm_s16le",
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    str(output_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            continue
 
 
 @router.post("/diarize/{video_id}", response_model=DiarizeResponse)

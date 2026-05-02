@@ -129,3 +129,29 @@ def test_translate_source_not_found(client, monkeypatch, ui_dir):
 
     resp = client.post("/api/translate/NONEXISTENT?target_language=es")
     assert resp.status_code == 404
+
+
+def test_translate_preserves_segment_when_argos_fails(client, monkeypatch, ui_dir):
+    _patch_resolve_title(monkeypatch)
+
+    src = ui_dir / "transcriptions" / "whisper" / "Test Title.json"
+    src.write_text(json.dumps(_fake_transcript()))
+
+    def flaky_translate(text, fc, tc):
+        if "Hello" in text:
+            raise RuntimeError("argos failed")
+        return text.upper()
+
+    monkeypatch.setattr("api.src.services.translation_service.translate_sentence", flaky_translate)
+    monkeypatch.setattr(
+        "api.src.services.translation_service.download_and_install_package",
+        lambda fc, tc: (_ for _ in ()).throw(RuntimeError("install failed")),
+    )
+
+    resp = client.post("/api/translate/G3Eup4mfJdA?target_language=es")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["segments"][0]["text"] == " Hello world"
+    assert body["text"] == "Hello world"
+    assert body["target_language"] == "es"

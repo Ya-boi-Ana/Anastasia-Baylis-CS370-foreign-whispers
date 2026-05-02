@@ -539,9 +539,39 @@ def test_chatterbox_falls_back_when_voice_upload_fails(tmp_path, monkeypatch):
     assert data == b"RIFFdefault"
 
 
-def test_voice_upload_synthesis_fails_fast_after_consecutive_errors(tmp_path):
+def test_voice_upload_synthesis_uses_silence_by_default_after_consecutive_errors(tmp_path, monkeypatch):
+    from api.src.services import tts_engine
+    from api.src.services.tts_engine import _synthesize_pending_raw
+
+    monkeypatch.setattr(tts_engine, "_TTS_FAIL_FAST", False)
+
+    class Engine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            raise RuntimeError("backend down")
+
+    pending = [
+        {
+            "index": i,
+            "text": f"Phrase {i}",
+            "speaker_wav": "es/SPEAKER_00.wav",
+            "wav_path": str(tmp_path / f"{i}.wav"),
+            "cache_path": tmp_path / f"cache{i}.wav",
+        }
+        for i in range(10)
+    ]
+
+    results = _synthesize_pending_raw(Engine(), pending, max_workers=4, max_consecutive_failures=3)
+
+    assert sorted(results) == list(range(10))
+    assert all(value is None for value in results.values())
+
+
+def test_voice_upload_synthesis_can_fail_fast_after_consecutive_errors(tmp_path, monkeypatch):
+    from api.src.services import tts_engine
     import pytest
     from api.src.services.tts_engine import _synthesize_pending_raw
+
+    monkeypatch.setattr(tts_engine, "_TTS_FAIL_FAST", True)
 
     class Engine:
         def tts_to_file(self, text, file_path, **kwargs):

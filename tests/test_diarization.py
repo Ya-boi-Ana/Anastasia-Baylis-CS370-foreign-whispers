@@ -179,6 +179,30 @@ def test_extract_speaker_references_overwrites_video_namespace_only(tmp_path, mo
     assert len(calls) == 1
 
 
+def test_extract_speaker_references_skips_failed_ref(tmp_path, monkeypatch):
+    import asyncio
+    import subprocess
+    import api.src.routers.diarize as mod
+
+    data_dir = tmp_path / "api"
+    videos = data_dir / "videos"
+    videos.mkdir(parents=True)
+    (videos / "Demo.mp4").write_bytes(b"video")
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
+
+    monkeypatch.setattr(mod.settings, "data_dir", data_dir)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    asyncio.run(mod._extract_speaker_references("Demo", [
+        {"start_s": 0.0, "end_s": 4.0, "speaker": "SPEAKER_00"},
+    ]))
+
+    speakers_dir = tmp_path / "speakers" / "es"
+    assert not (speakers_dir / "Demo__SPEAKER_00.wav").exists()
+
+
 def test_diarize_endpoint_skips_videos_above_duration_limit(tmp_path, monkeypatch):
     import asyncio
     import api.src.routers.diarize as mod
