@@ -53,6 +53,13 @@ function makeVariantId(videoId: string, configId: string): string {
   return `${videoId}::${configId}`;
 }
 
+function makeRunId(): string {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+}
+
 type Action =
   | { type: "START"; videoId: string; settings: StudioSettings; configs: ConfigEntry[] }
   | { type: "STAGE_ACTIVE"; stage: PipelineStage }
@@ -176,7 +183,7 @@ export function usePipeline(initialVariants: VideoVariant[] = [], initialVideoId
   );
 
   const runPipeline = useCallback(async (video: Video, settings: StudioSettings) => {
-    const configs = computeConfigEntries(settings);
+    const configs = computeConfigEntries(settings, makeRunId());
     dispatch({ type: "START", videoId: video.id, settings, configs });
 
     const run = async <T,>(

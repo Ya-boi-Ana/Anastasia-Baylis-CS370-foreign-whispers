@@ -97,10 +97,19 @@ interface PipelineTableProps {
 }
 
 export function PipelineTable({ pipelineState, settings }: PipelineTableProps) {
+  const activeConfigIds = pipelineState.variants
+    .filter((v) =>
+      v.sourceVideoId === pipelineState.videoId &&
+      (v.status === "processing" || v.id === pipelineState.activeVariantId)
+    )
+    .map((v) => v.configId);
   const configEntries = computeConfigEntries(settings);
-  const configLabel = configEntries.length === 1
-    ? configEntries[0].id
-    : configEntries.map((c) => c.id).join(", ");
+  const configIds = activeConfigIds.length > 0
+    ? activeConfigIds
+    : configEntries.map((c) => c.id);
+  const configLabel = configIds.length === 1
+    ? configIds[0]
+    : configIds.join(", ");
 
   function getConfig(stage: PipelineStage): string {
     switch (stage) {

@@ -21,16 +21,23 @@ function titleCase(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function canonicalJson(entry: Pick<ConfigEntry, "dubbing" | "diarization" | "voiceCloning">): string {
+function canonicalJson(
+  entry: Pick<ConfigEntry, "dubbing" | "diarization" | "voiceCloning">,
+  runId?: string
+): string {
   const obj: Record<string, string> = {};
   if (entry.dubbing) obj.d = entry.dubbing;
   if (entry.diarization) obj.i = entry.diarization;
   if (entry.voiceCloning) obj.v = entry.voiceCloning;
+  if (runId) obj.r = runId;
   return JSON.stringify(obj);
 }
 
-export function computeConfigId(entry: Pick<ConfigEntry, "dubbing" | "diarization" | "voiceCloning">): string {
-  return "c-" + djb2(canonicalJson(entry));
+export function computeConfigId(
+  entry: Pick<ConfigEntry, "dubbing" | "diarization" | "voiceCloning">,
+  runId?: string
+): string {
+  return "c-" + djb2(canonicalJson(entry, runId));
 }
 
 export function computeConfigLabel(entry: Pick<ConfigEntry, "dubbing" | "diarization" | "voiceCloning">): string {
@@ -41,7 +48,7 @@ export function computeConfigLabel(entry: Pick<ConfigEntry, "dubbing" | "diariza
   return parts.join(" · ") || "Default";
 }
 
-export function computeConfigEntries(settings: StudioSettings): ConfigEntry[] {
+export function computeConfigEntries(settings: StudioSettings, runId?: string): ConfigEntry[] {
   const dubbing = [...new Set(settings.dubbing)];
   const diarization = [...new Set(settings.diarization)];
   const voiceCloning = [...new Set(settings.voiceCloning)];
@@ -71,7 +78,7 @@ export function computeConfigEntries(settings: StudioSettings): ConfigEntry[] {
 
   return combos.map((combo): ConfigEntry => ({
     ...combo,
-    id: computeConfigId(combo),
+    id: computeConfigId(combo, runId),
     label: computeConfigLabel(combo),
   }));
 }
