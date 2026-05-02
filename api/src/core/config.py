@@ -1,5 +1,6 @@
 """Application settings loaded from environment variables."""
 
+import os
 from pathlib import Path
 
 from pydantic import model_validator
@@ -103,6 +104,8 @@ class Settings(BaseSettings):
         """If database_url is empty but postgres_dsn was set, copy it over."""
         if not self.database_url and self.postgres_dsn:
             self.database_url = self.postgres_dsn
+        if not self.hf_token:
+            self.hf_token = os.environ.get("HF_TOKEN", "")
         return self
 
 

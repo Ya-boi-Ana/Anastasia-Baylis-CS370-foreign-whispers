@@ -100,7 +100,7 @@ export interface VideoVariant {
 
 export const DEFAULT_STUDIO_SETTINGS: StudioSettings = {
   dubbing: ["baseline"],
-  diarization: [],
+  diarization: ["pyannote"],
   voiceCloning: ["chatterbox"],
   useYoutubeCaptions: true,
 };

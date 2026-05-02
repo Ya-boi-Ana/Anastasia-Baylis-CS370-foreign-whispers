@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api")
 _tts_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
-def _cached_audio_is_current(wav_path: pathlib.Path) -> bool:
+def _cached_audio_is_current(wav_path: pathlib.Path, require_voice_cloning: bool = False) -> bool:
     """Return False for cached audio known to use legacy slow-down stretching."""
     report_path = wav_path.with_suffix(".align.json")
     if not report_path.exists():
@@ -41,6 +41,11 @@ def _cached_audio_is_current(wav_path: pathlib.Path) -> bool:
         failures = sum(1 for segment in segments if segment.get("raw_duration_s") == 0)
         if failures / len(segments) > 0.2:
             return False
+
+        if require_voice_cloning:
+            speaker_segments = [segment for segment in segments if segment.get("speaker")]
+            if speaker_segments and any(not segment.get("speaker_wav") for segment in speaker_segments):
+                return False
 
     return True
 
@@ -76,7 +81,9 @@ async def tts_endpoint(
 
     wav_path = audio_dir / f"{title}.wav"
 
-    if wav_path.exists() and _cached_audio_is_current(wav_path):
+    wants_voice_cloning = voice_cloning or speaker_wav is not None
+
+    if wav_path.exists() and _cached_audio_is_current(wav_path, require_voice_cloning=wants_voice_cloning):
         return {
             "video_id": video_id,
             "audio_path": str(wav_path),
@@ -87,7 +94,7 @@ async def tts_endpoint(
 
     lock = _tts_locks[(video_id, config)]
     async with lock:
-        if wav_path.exists() and _cached_audio_is_current(wav_path):
+        if wav_path.exists() and _cached_audio_is_current(wav_path, require_voice_cloning=wants_voice_cloning):
             return {
                 "video_id": video_id,
                 "audio_path": str(wav_path),
@@ -100,7 +107,7 @@ async def tts_endpoint(
             source_path,
             str(audio_dir),
             alignment=alignment,
-            voice_cloning=voice_cloning or speaker_wav is not None,
+            voice_cloning=wants_voice_cloning,
             speaker_wav=speaker_wav,
         )
 

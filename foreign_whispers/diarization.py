@@ -5,14 +5,30 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _patch_torchaudio_for_pyannote() -> None:
+    """Restore torchaudio APIs still referenced by pyannote.audio 3.x."""
+    try:
+        import torchaudio
+    except Exception:
+        return
+
+    if not hasattr(torchaudio, "AudioMetaData"):
+        torchaudio.AudioMetaData = type("AudioMetaData", (), {})
+    if not hasattr(torchaudio, "list_audio_backends"):
+        torchaudio.list_audio_backends = lambda: ["soundfile"]
+    if not hasattr(torchaudio, "set_audio_backend"):
+        torchaudio.set_audio_backend = lambda backend: None
+
+
 def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
-    if not hf_token:
+    if not hf_token or hf_token == "hf_placeholder_token":
         logger.warning("No HF token provided — diarization skipped.")
         return []
 
     try:
+        _patch_torchaudio_for_pyannote()
         from pyannote.audio import Pipeline
-    except ImportError:
+    except (ImportError, AttributeError):
         logger.warning("pyannote.audio not installed — returning empty diarization.")
         return []
 

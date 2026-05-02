@@ -788,6 +788,7 @@ def text_file_to_speech(
         for m in synth_metas:
             i = m["index"]
             start_ms = int((m["start"] + offset) * 1000)
+            resolved_speaker_wav = None
 
             if start_ms > cursor_ms:
                 combined += AudioSegment.silent(duration=start_ms - cursor_ms)
@@ -834,6 +835,8 @@ def text_file_to_speech(
                 "index": i,
                 "source_indices": m.get("source_indices", [i]),
                 "text": m["text"],
+                "speaker": m.get("speaker"),
+                "speaker_wav": resolved_speaker_wav,
                 "target_sec": round(m["target_sec"], 3),
                 "stretch_factor": round(m["stretch_factor"], 3),
                 "raw_duration_s": round(seg_raw_duration, 3),

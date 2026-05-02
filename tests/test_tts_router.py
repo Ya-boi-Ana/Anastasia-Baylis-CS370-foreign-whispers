@@ -215,3 +215,20 @@ def test_cached_audio_with_many_silent_fallbacks_is_not_current(tmp_path):
     }))
 
     assert _cached_audio_is_current(wav) is False
+
+
+def test_cached_audio_without_speaker_refs_is_not_current_when_voice_cloning(tmp_path):
+    """Voice-cloned reruns should regenerate legacy sidecars without speaker refs."""
+    from api.src.routers.tts import _cached_audio_is_current
+
+    wav = tmp_path / "Test Title.wav"
+    wav.write_bytes(b"RIFF")
+    wav.with_suffix(".align.json").write_text(json.dumps({
+        "timing_model": "non_overlapping_phrase_groups_v1",
+        "segments": [
+            {"speaker": "SPEAKER_00", "speaker_wav": None, "raw_duration_s": 1.0, "speed_factor": 1.0},
+        ],
+    }))
+
+    assert _cached_audio_is_current(wav, require_voice_cloning=True) is False
+    assert _cached_audio_is_current(wav, require_voice_cloning=False) is True

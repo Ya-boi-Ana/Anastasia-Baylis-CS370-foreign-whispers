@@ -78,6 +78,8 @@ services:
       - FW_CHATTERBOX_API_URL=http://chatterbox-gpu:8020
       - FW_WHISPER_API_URL=http://whisper-gpu:8000
       - FW_WHISPER_MODEL=base
+      - FW_HF_TOKEN=${FW_HF_TOKEN:-}
+      - HF_TOKEN=${HF_TOKEN:-}
       - PYTHONPATH=/app/.venv/lib/python3.11/site-packages
     volumes:
       - ./pipeline_data:/app/pipeline_data
