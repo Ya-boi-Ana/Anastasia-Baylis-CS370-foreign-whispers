@@ -11,12 +11,22 @@ def get_video_info(url: str):
     return _dl.get_video_info(url)
 
 
-def dv_download_video(url: str, destination: str, filename: str | None = None):
-    return _dl.download_video(url, destination, filename)
+def dv_download_video(
+    url: str,
+    destination: str,
+    filename: str | None = None,
+    video_info: tuple[str, str] | None = None,
+):
+    return _dl.download_video(url, destination, filename, video_info)
 
 
-def dv_download_caption(url: str, destination: str, filename: str | None = None):
-    return _dl.download_caption(url, destination, filename)
+def dv_download_caption(
+    url: str,
+    destination: str,
+    filename: str | None = None,
+    video_info: tuple[str, str] | None = None,
+):
+    return _dl.download_caption(url, destination, filename, video_info)
 
 
 class DownloadService:
@@ -36,17 +46,37 @@ class DownloadService:
         """Return (video_id, title) for a YouTube URL."""
         return get_video_info(url)
 
-    def download_video(self, url: str, destination: str, filename: str | None = None) -> str:
+    def download_video(
+        self,
+        url: str,
+        destination: str,
+        filename: str | None = None,
+        video_info: tuple[str, str] | None = None,
+    ) -> str:
         """Download an MP4 and return the saved path."""
         if filename is None:
-            return dv_download_video(url, destination)
-        return dv_download_video(url, destination, filename)
+            if video_info is None:
+                return dv_download_video(url, destination)
+            return dv_download_video(url, destination, video_info=video_info)
+        if video_info is None:
+            return dv_download_video(url, destination, filename)
+        return dv_download_video(url, destination, filename, video_info=video_info)
 
-    def download_caption(self, url: str, destination: str, filename: str | None = None) -> str:
+    def download_caption(
+        self,
+        url: str,
+        destination: str,
+        filename: str | None = None,
+        video_info: tuple[str, str] | None = None,
+    ) -> str:
         """Download captions and return the saved path."""
         if filename is None:
-            return dv_download_caption(url, destination)
-        return dv_download_caption(url, destination, filename)
+            if video_info is None:
+                return dv_download_caption(url, destination)
+            return dv_download_caption(url, destination, video_info=video_info)
+        if video_info is None:
+            return dv_download_caption(url, destination, filename)
+        return dv_download_caption(url, destination, filename, video_info=video_info)
 
     # ------------------------------------------------------------------
     # Helpers (moved from router)

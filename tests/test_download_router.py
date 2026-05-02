@@ -53,11 +53,11 @@ def test_download_returns_video_id_and_title(client, monkeypatch, ui_dir):
     )
     monkeypatch.setattr(
         "api.src.services.download_service.dv_download_video",
-        lambda url, dest, fn=None: str(ui_dir / "videos" / "Test Title.mp4"),
+        lambda url, dest, fn=None, video_info=None: str(ui_dir / "videos" / "Test Title.mp4"),
     )
     monkeypatch.setattr(
         "api.src.services.download_service.dv_download_caption",
-        lambda url, dest, fn=None: str(ui_dir / "youtube_captions" / "Test Title.txt"),
+        lambda url, dest, fn=None, video_info=None: str(ui_dir / "youtube_captions" / "Test Title.txt"),
     )
 
     # Write a fake transcript so the endpoint can read it back

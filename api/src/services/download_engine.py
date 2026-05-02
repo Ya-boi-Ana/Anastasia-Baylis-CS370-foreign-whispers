@@ -14,7 +14,11 @@ _COOKIES_FILE = os.getenv("YT_COOKIES_FILE", "/app/cookies.txt")
 def _yt_dlp_opts(**extra):
     """Base yt-dlp options. Cookies are optional — yt-dlp works without them
     by using alternative YouTube clients (Android VR) that bypass n-challenge."""
-    opts = {"quiet": True, "no_warnings": True}
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "concurrent_fragment_downloads": int(os.getenv("YT_CONCURRENT_FRAGMENTS", "8")),
+    }
     cookies_path = pathlib.Path(_COOKIES_FILE)
     if cookies_path.is_file():
         opts["cookiefile"] = _COOKIES_FILE
@@ -72,11 +76,11 @@ def get_video_info(url):
         info = ydl.extract_info(url, download=False, process=False)
     return info["id"], info["title"]
 
-def download_video(url, destination_folder, filename=None):
+def download_video(url, destination_folder, filename=None, video_info=None):
     """downloads YouTube Video (mp4) from URL, skipping if file already exists.
     If *filename* is given it is used as the stem; otherwise the YouTube title
     is used with colons and pipes stripped."""
-    vid_id, title = get_video_info(url)
+    vid_id, title = video_info or get_video_info(url)
     safe_title = filename or re.sub(r'[:|]', '', title).strip()
     destination = pathlib.Path(destination_folder)
     default_path = destination / (safe_title + ".mp4")
@@ -104,11 +108,11 @@ def download_video(url, destination_folder, filename=None):
     print("Success!")
     return str(final_path)
 
-def download_caption(url, destination_folder, filename=None):
+def download_caption(url, destination_folder, filename=None, video_info=None):
     """download english captions to <filename.txt> in destination_folder, skipping if file already exists.
     If *filename* is given it is used as the stem; otherwise the YouTube title
     is used with colons and pipes stripped."""
-    video_id, title = get_video_info(url)
+    video_id, title = video_info or get_video_info(url)
     safe_title = filename or re.sub(r'[:|]', '', title).strip()
     save_path = pathlib.Path(destination_folder) / (safe_title + ".txt")
     if save_path.exists():

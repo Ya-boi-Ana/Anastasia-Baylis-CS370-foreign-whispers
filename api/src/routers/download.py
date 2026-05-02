@@ -1,5 +1,6 @@
 """POST /api/download — download YouTube video + captions (issue by5)."""
 
+import asyncio
 import json
 import pathlib
 
@@ -32,12 +33,32 @@ async def download_endpoint(body: DownloadRequest):
     video_path = videos_dir / f"{stem}.mp4"
     caption_path = captions_dir / f"{stem}.txt"
 
-    # Skip re-download if both files exist
+    video_info = (video_id, title)
+    downloads = []
     if not video_path.exists():
-        _download_service.download_video(body.url, str(videos_dir), stem)
+        downloads.append(
+            asyncio.to_thread(
+                _download_service.download_video,
+                body.url,
+                str(videos_dir),
+                stem,
+                video_info,
+            )
+        )
 
     if not caption_path.exists():
-        _download_service.download_caption(body.url, str(captions_dir), stem)
+        downloads.append(
+            asyncio.to_thread(
+                _download_service.download_caption,
+                body.url,
+                str(captions_dir),
+                stem,
+                video_info,
+            )
+        )
+
+    if downloads:
+        await asyncio.gather(*downloads)
 
     segments = _download_service.read_caption_segments(caption_path)
 
