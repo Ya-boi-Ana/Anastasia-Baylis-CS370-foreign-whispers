@@ -463,3 +463,26 @@ def test_chatterbox_falls_back_when_voice_upload_fails(tmp_path, monkeypatch):
     data = ChatterboxClient(base_url="http://tts")._synthesize_with_voice("hola", str(ref))
 
     assert data == b"RIFFdefault"
+
+
+def test_voice_upload_synthesis_fails_fast_after_consecutive_errors(tmp_path):
+    import pytest
+    from api.src.services.tts_engine import _synthesize_pending_raw
+
+    class Engine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            raise RuntimeError("backend down")
+
+    pending = [
+        {
+            "index": i,
+            "text": f"Phrase {i}",
+            "speaker_wav": "es/SPEAKER_00.wav",
+            "wav_path": str(tmp_path / f"{i}.wav"),
+            "cache_path": tmp_path / f"cache{i}.wav",
+        }
+        for i in range(10)
+    ]
+
+    with pytest.raises(RuntimeError, match="aborting early"):
+        _synthesize_pending_raw(Engine(), pending, max_workers=4, max_consecutive_failures=3)

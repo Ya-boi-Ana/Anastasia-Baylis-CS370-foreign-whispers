@@ -356,6 +356,7 @@ def _synthesize_pending_raw(
     tts_engine,
     pending: list[dict],
     max_workers: int = _TTS_CONCURRENCY,
+    max_consecutive_failures: int = _MAX_CONSECUTIVE_TTS_FAILURES,
 ) -> dict[int, bytes | None]:
     """Synthesize uncached phrase audio with bounded parallelism.
 
@@ -368,6 +369,32 @@ def _synthesize_pending_raw(
 
     has_voice_uploads = any(item.get("speaker_wav") for item in pending)
     workers = 1 if has_voice_uploads else max(1, min(max_workers, len(pending)))
+    if workers == 1:
+        consecutive_failures = 0
+        for item in pending:
+            try:
+                raw_bytes = _synthesize_raw(
+                    tts_engine,
+                    item["text"],
+                    item["wav_path"],
+                    speaker_wav=item["speaker_wav"],
+                )
+            except Exception as exc:
+                print(f"[tts] TTS failed for segment ({exc}), using silence")
+                raw_bytes = None
+
+            if raw_bytes is not None:
+                _write_cached_raw(item["cache_path"], raw_bytes)
+                consecutive_failures = 0
+            elif item["text"].strip():
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    raise RuntimeError(
+                        "TTS backend failed repeatedly; aborting early so the backend can be restarted"
+                    )
+            results[item["index"]] = raw_bytes
+        return results
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_item = {
             executor.submit(
