@@ -413,3 +413,53 @@ def test_chatterbox_ignores_empty_speaker_wav(tmp_path, monkeypatch):
 
     assert data == b"RIFFfake"
     assert called["default"] is True
+
+
+def test_chatterbox_rewinds_upload_file_on_retry(tmp_path, monkeypatch):
+    import requests
+    from api.src.services.tts_engine import ChatterboxClient
+
+    ref = tmp_path / "speaker.wav"
+    ref.write_bytes(b"RIFF" + b"x" * 100)
+    sizes = []
+
+    class Response:
+        def __init__(self, ok):
+            self.content = b"RIFFok" if ok else b""
+            self._ok = ok
+
+        def raise_for_status(self):
+            if not self._ok:
+                raise requests.HTTPError("temporary")
+
+    def fake_post(url, timeout=None, **kwargs):
+        file_obj = kwargs["files"]["voice_file"][1]
+        sizes.append(len(file_obj.read()))
+        return Response(ok=len(sizes) == 2)
+
+    monkeypatch.setattr("api.src.services.tts_engine.requests.post", fake_post)
+    monkeypatch.setattr("api.src.services.tts_engine.time.sleep", lambda *_: None)
+
+    data = ChatterboxClient(base_url="http://tts")._synthesize_with_voice("hola", str(ref))
+
+    assert data == b"RIFFok"
+    assert sizes == [104, 104]
+
+
+def test_chatterbox_falls_back_when_voice_upload_fails(tmp_path, monkeypatch):
+    import requests
+    from api.src.services.tts_engine import ChatterboxClient
+
+    ref = tmp_path / "speaker.wav"
+    ref.write_bytes(b"RIFF" + b"x" * 100)
+
+    def fake_request(self, url, **kwargs):
+        if url.endswith("/upload"):
+            raise requests.HTTPError("voice failed")
+        return b"RIFFdefault"
+
+    monkeypatch.setattr(ChatterboxClient, "_request_with_retries", fake_request)
+
+    data = ChatterboxClient(base_url="http://tts")._synthesize_with_voice("hola", str(ref))
+
+    assert data == b"RIFFdefault"

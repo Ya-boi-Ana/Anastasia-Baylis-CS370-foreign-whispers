@@ -124,12 +124,20 @@ class ChatterboxClient:
             )
             return self._synthesize_default(text)
 
-        with open(wav_path, "rb") as f:
-            return self._request_with_retries(
-                f"{self.base_url}/v1/audio/speech/upload",
-                data={"input": text, "response_format": "wav"},
-                files={"voice_file": (wav_path.name, f, "audio/wav")},
+        try:
+            with open(wav_path, "rb") as f:
+                return self._request_with_retries(
+                    f"{self.base_url}/v1/audio/speech/upload",
+                    data={"input": text, "response_format": "wav"},
+                    files={"voice_file": (wav_path.name, f, "audio/wav")},
+                )
+        except Exception as exc:
+            _logging.getLogger(__name__).warning(
+                "[tts] Voice cloning failed for %s; falling back to default voice: %s",
+                speaker_wav,
+                exc,
             )
+            return self._synthesize_default(text)
 
     def _request_with_retries(self, url: str, **kwargs) -> bytes:
         """POST to Chatterbox with retries and a longer read timeout."""
@@ -138,6 +146,7 @@ class ChatterboxClient:
 
         for attempt in range(1, _TTS_RETRIES + 1):
             try:
+                self._rewind_upload_files(kwargs.get("files"))
                 resp = requests.post(url, timeout=timeout, **kwargs)
                 resp.raise_for_status()
                 if not resp.content:
@@ -156,6 +165,16 @@ class ChatterboxClient:
 
         assert last_exc is not None
         raise last_exc
+
+    @staticmethod
+    def _rewind_upload_files(files) -> None:
+        """Reset file handles before retrying multipart uploads."""
+        if not files:
+            return
+        for value in files.values() if isinstance(files, dict) else files:
+            file_obj = value[1] if isinstance(value, tuple) and len(value) > 1 else value
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(0)
 
     @staticmethod
     def _split_text(text: str, max_len: int = 200) -> list[str]:
