@@ -362,3 +362,54 @@ def test_text_file_to_speech_reuses_raw_phrase_cache(tmp_path):
     text_file_to_speech(str(es_path), str(out_dir), tts_engine=engine)
 
     assert calls["count"] == 1
+
+
+def test_parallel_raw_synthesis_serializes_voice_uploads(tmp_path):
+    from api.src.services.tts_engine import _synthesize_pending_raw
+
+    class Engine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            from pydub import AudioSegment
+            AudioSegment.silent(duration=100).export(file_path, format="wav")
+
+    pending = [
+        {
+            "index": 0,
+            "text": "Hola",
+            "speaker_wav": "es/SPEAKER_00.wav",
+            "wav_path": str(tmp_path / "0.wav"),
+            "cache_path": tmp_path / "cache0.wav",
+        },
+        {
+            "index": 1,
+            "text": "Mundo",
+            "speaker_wav": "es/SPEAKER_00.wav",
+            "wav_path": str(tmp_path / "1.wav"),
+            "cache_path": tmp_path / "cache1.wav",
+        },
+    ]
+
+    results = _synthesize_pending_raw(Engine(), pending, max_workers=4)
+
+    assert sorted(results) == [0, 1]
+    assert all(results.values())
+
+
+def test_chatterbox_ignores_empty_speaker_wav(tmp_path, monkeypatch):
+    from api.src.services.tts_engine import ChatterboxClient
+
+    empty_ref = tmp_path / "empty.wav"
+    empty_ref.write_bytes(b"")
+
+    called = {"default": False}
+
+    def fake_default(self, text):
+        called["default"] = True
+        return b"RIFFfake"
+
+    monkeypatch.setattr(ChatterboxClient, "_synthesize_default", fake_default)
+
+    data = ChatterboxClient()._synthesize_with_voice("hola", str(empty_ref))
+
+    assert data == b"RIFFfake"
+    assert called["default"] is True

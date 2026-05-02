@@ -118,6 +118,11 @@ class ChatterboxClient:
                 "[tts] Speaker WAV %s not found, falling back to default voice", speaker_wav
             )
             return self._synthesize_default(text)
+        if wav_path.stat().st_size <= 44:
+            _logging.getLogger(__name__).warning(
+                "[tts] Speaker WAV %s is empty or invalid, falling back to default voice", speaker_wav
+            )
+            return self._synthesize_default(text)
 
         with open(wav_path, "rb") as f:
             return self._request_with_retries(
@@ -342,7 +347,8 @@ def _synthesize_pending_raw(
     if not pending:
         return results
 
-    workers = max(1, min(max_workers, len(pending)))
+    has_voice_uploads = any(item.get("speaker_wav") for item in pending)
+    workers = 1 if has_voice_uploads else max(1, min(max_workers, len(pending)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_item = {
             executor.submit(
