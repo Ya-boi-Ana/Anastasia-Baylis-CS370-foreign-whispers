@@ -33,16 +33,17 @@ def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
         return []
 
     try:
-        try:
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                token=hf_token,
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token,
+        )
+        if pipeline is None:
+            logger.warning(
+                "Could not load pyannote/speaker-diarization-3.1. "
+                "Verify the Hugging Face account has accepted gated access "
+                "for pyannote/speaker-diarization-3.1 and pyannote/segmentation-3.0."
             )
-        except TypeError:
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=hf_token,
-            )
+            return []
 
         diarization = pipeline(audio_path)
 

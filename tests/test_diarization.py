@@ -41,6 +41,25 @@ def test_returns_empty_when_pyannote_absent(monkeypatch):
     assert result == []
 
 
+def test_returns_empty_when_pyannote_pipeline_access_denied(monkeypatch):
+    import sys
+    import types
+
+    class FakePipeline:
+        @classmethod
+        def from_pretrained(cls, checkpoint_path, use_auth_token=None):
+            assert checkpoint_path == "pyannote/speaker-diarization-3.1"
+            assert use_auth_token == "fake-token"
+            return None
+
+    fake_module = types.SimpleNamespace(Pipeline=FakePipeline)
+    monkeypatch.setitem(sys.modules, "pyannote.audio", fake_module)
+
+    result = diarize_audio("/any/path.wav", hf_token="fake-token")
+
+    assert result == []
+
+
 @pytest.mark.requires_pyannote
 def test_real_diarization_returns_speaker_labels(tmp_path):
     """Integration test — requires pyannote.audio and FW_HF_TOKEN env var."""
