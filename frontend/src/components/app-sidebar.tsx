@@ -2,10 +2,12 @@
 
 import * as React from "react";
 import {
+  CheckCircle2Icon,
   FilmIcon,
   VideoIcon,
   PlayIcon,
   Settings2Icon,
+  LoaderCircleIcon,
 } from "lucide-react";
 import { SettingsDialog } from "./settings-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -30,17 +32,24 @@ function getVideoStatus(
   video: Video,
   pipelineState: PipelineState,
   variants: VideoVariant[]
-): { label: string; variant: "default" | "secondary" | "destructive" | "outline" } {
+): {
+  label: string;
+  variant: "default" | "secondary" | "destructive" | "outline";
+  completeCount: number;
+  isComplete: boolean;
+  isProcessing: boolean;
+} {
   const videoVariants = variants.filter((v) => v.sourceVideoId === video.id);
-  const hasComplete = videoVariants.some((v) => v.status === "complete");
+  const completeCount = videoVariants.filter((v) => v.status === "complete").length;
+  const hasComplete = completeCount > 0;
   const hasProcessing = videoVariants.some((v) => v.status === "processing");
 
   if (pipelineState.videoId === video.id && pipelineState.status === "running") {
-    return { label: "Running", variant: "secondary" };
+    return { label: "Running", variant: "secondary", completeCount, isComplete: hasComplete, isProcessing: true };
   }
-  if (hasProcessing) return { label: "Running", variant: "secondary" };
-  if (hasComplete) return { label: "Done", variant: "default" };
-  return { label: "New", variant: "outline" };
+  if (hasProcessing) return { label: "Running", variant: "secondary", completeCount, isComplete: hasComplete, isProcessing: true };
+  if (hasComplete) return { label: "Processed", variant: "default", completeCount, isComplete: true, isProcessing: false };
+  return { label: "New", variant: "outline", completeCount: 0, isComplete: false, isProcessing: false };
 }
 
 interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
@@ -92,6 +101,14 @@ export function AppSidebar({
               {videos.map((video) => {
                 const isActive = video.id === selectedVideoId;
                 const status = getVideoStatus(video, pipelineState, pipelineState.variants);
+                const variantsLabel = status.completeCount === 1
+                  ? "1 processed variant"
+                  : `${status.completeCount} processed variants`;
+                const itemClassName = [
+                  "h-auto py-2",
+                  isActive ? "border-l-2 border-primary bg-sidebar-accent/80 pl-1.5" : "",
+                  status.isComplete && !isActive ? "border-l-2 border-primary/70 bg-primary/10 pl-1.5 hover:bg-primary/15" : "",
+                ].filter(Boolean).join(" ");
 
                 return (
                   <SidebarMenuItem key={video.id}>
@@ -99,16 +116,27 @@ export function AppSidebar({
                       isActive={isActive}
                       onClick={() => onSelectVideo(video.id)}
                       tooltip={video.title}
-                      className={`h-auto py-1.5 ${isActive ? "border-l-2 border-primary bg-sidebar-accent/80 pl-1.5" : ""}`}
+                      className={itemClassName}
                     >
-                      <VideoIcon className="mt-0.5 shrink-0" />
+                      {status.isProcessing ? (
+                        <LoaderCircleIcon className="mt-0.5 shrink-0 animate-spin text-primary" />
+                      ) : status.isComplete ? (
+                        <CheckCircle2Icon className="mt-0.5 shrink-0 text-primary" />
+                      ) : (
+                        <VideoIcon className="mt-0.5 shrink-0" />
+                      )}
                       <div className="flex flex-col min-w-0">
-                        <span className="text-sm leading-snug">{video.title}</span>
+                        <span className="text-sm leading-snug font-medium">{video.title}</span>
                         <span className="text-[10px] text-muted-foreground font-mono">{video.id}</span>
+                        {status.isComplete ? (
+                          <span className="mt-0.5 text-[10px] font-medium text-primary">
+                            {variantsLabel}
+                          </span>
+                        ) : null}
                       </div>
                     </SidebarMenuButton>
                     <SidebarMenuBadge>
-                      <Badge variant={status.variant} className="text-[9px] px-1 py-0 leading-tight">
+                      <Badge variant={status.variant} className="text-[9px] px-1.5 py-0 leading-tight">
                         {status.label}
                       </Badge>
                     </SidebarMenuBadge>
