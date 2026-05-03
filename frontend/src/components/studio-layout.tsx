@@ -51,6 +51,7 @@ export function StudioLayout({ videos, initialVariants }: StudioLayoutProps) {
         variant="inset"
         videos={videos}
         selectedVideoId={selectedVideoId}
+        settings={settings}
         onSelectVideo={handleSelectVideo}
         pipelineState={state}
         onStartPipeline={handleStartPipeline}

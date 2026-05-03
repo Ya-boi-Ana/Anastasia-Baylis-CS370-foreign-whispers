@@ -17,6 +17,8 @@ import {
   AlignCenterHorizontalIcon,
   CircleDotIcon,
   CircleIcon,
+  UsersIcon,
+  WandSparklesIcon,
 } from "lucide-react";
 import { useStudioSettingsContext } from "@/contexts/studio-settings-context";
 
@@ -100,17 +102,17 @@ function TranslateSettings() {
 }
 
 const ALIGNMENT_METHODS = [
-  { value: "baseline", label: "Baseline", description: "No temporal alignment — TTS audio plays at natural speed." },
-  { value: "aligned", label: "Aligned", description: "Syllable-based stretch/compress to match original segment timing." },
+  { value: "baseline", label: "Baseline", description: "No temporal alignment. TTS audio plays at natural speed." },
+  { value: "aligned", label: "Aligned", description: "Stretch/compress TTS to match original segment timing." },
 ];
 
 function AlignmentSettings() {
-  const { settings, toggleSetting } = useStudioSettingsContext();
+  const { settings, setSetting } = useStudioSettingsContext();
   return (
     <div className="space-y-3">
       <div>
         <p className="text-sm font-medium">Dubbing method</p>
-        <p className="text-xs text-muted-foreground mt-1">Select one or more. Multiple selections produce separate output variants.</p>
+        <p className="text-xs text-muted-foreground mt-1">Choose how synthesized speech is timed before stitching.</p>
       </div>
       {ALIGNMENT_METHODS.map((m) => (
         <button
@@ -118,7 +120,7 @@ function AlignmentSettings() {
           key={m.value}
           className="flex w-full cursor-pointer items-center gap-3 rounded-md border border-border/40 p-3 text-left transition-colors hover:bg-accent/10 data-[checked=true]:border-primary/50 data-[checked=true]:bg-primary/5"
           data-checked={settings.dubbing.includes(m.value)}
-          onClick={() => toggleSetting("dubbing", m.value)}
+          onClick={() => setSetting("dubbing", m.value)}
         >
           {settings.dubbing.includes(m.value) ? (
             <CircleDotIcon className="size-4 shrink-0 text-primary" />
@@ -143,8 +145,62 @@ const VOICE_CLONING_METHODS = [
   { value: "chatterbox", label: "Chatterbox", description: "Voice cloning via Chatterbox (Resemble AI)" },
 ];
 
+function ToggleChoice({
+  checked,
+  icon: Icon,
+  title,
+  description,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  icon: React.ElementType;
+  title: string;
+  description: string;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <button
+        type="button"
+        className="flex cursor-pointer items-center gap-3 rounded-md border border-border/40 p-3 text-left transition-colors hover:bg-accent/10 data-[checked=true]:border-primary/50 data-[checked=true]:bg-primary/5"
+        data-checked={checked}
+        onClick={() => onCheckedChange(true)}
+      >
+        {checked ? (
+          <CircleDotIcon className="size-4 shrink-0 text-primary" />
+        ) : (
+          <Icon className="size-4 shrink-0 text-muted-foreground" />
+        )}
+        <div>
+          <div className="text-sm font-medium">{title} On</div>
+          <div className="text-xs text-muted-foreground">{description}</div>
+        </div>
+      </button>
+      <button
+        type="button"
+        className="flex cursor-pointer items-center gap-3 rounded-md border border-border/40 p-3 text-left transition-colors hover:bg-accent/10 data-[checked=true]:border-primary/50 data-[checked=true]:bg-primary/5"
+        data-checked={!checked}
+        onClick={() => onCheckedChange(false)}
+      >
+        {!checked ? (
+          <CircleDotIcon className="size-4 shrink-0 text-primary" />
+        ) : (
+          <CircleIcon className="size-4 shrink-0 text-muted-foreground" />
+        )}
+        <div>
+          <div className="text-sm font-medium">{title} Off</div>
+          <div className="text-xs text-muted-foreground">Skip this pipeline feature.</div>
+        </div>
+      </button>
+    </div>
+  );
+}
+
 function TTSSettings() {
-  const { settings, toggleSetting } = useStudioSettingsContext();
+  const { settings, setSetting } = useStudioSettingsContext();
+  const diarizationEnabled = settings.diarization.includes("pyannote");
+  const voiceCloningEnabled = settings.voiceCloning.includes("chatterbox");
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -159,52 +215,33 @@ function TTSSettings() {
 
       <div className="space-y-3">
         <p className="text-sm font-medium">Diarization</p>
-        <p className="text-xs text-muted-foreground">Speaker detection method for multi-speaker videos.</p>
-        {DIARIZATION_METHODS.map((m) => (
-          <button
-            type="button"
-            key={m.value}
-            className="flex w-full cursor-pointer items-center gap-3 rounded-md border border-border/40 p-3 text-left transition-colors hover:bg-accent/10 data-[checked=true]:border-primary/50 data-[checked=true]:bg-primary/5"
-            data-checked={settings.diarization.includes(m.value)}
-            onClick={() => toggleSetting("diarization", m.value)}
-          >
-            {settings.diarization.includes(m.value) ? (
-              <CircleDotIcon className="size-4 shrink-0 text-primary" />
-            ) : (
-              <CircleIcon className="size-4 shrink-0 text-muted-foreground" />
-            )}
-            <div>
-              <div className="text-sm font-medium">{m.label}</div>
-              <div className="text-xs text-muted-foreground">{m.description}</div>
-            </div>
-          </button>
-        ))}
+        <p className="text-xs text-muted-foreground">Speaker detection for multi-speaker videos.</p>
+        <ToggleChoice
+          checked={diarizationEnabled}
+          icon={UsersIcon}
+          title="Diarization"
+          description={DIARIZATION_METHODS[0].description}
+          onCheckedChange={(checked) => setSetting("diarization", checked ? "pyannote" : null)}
+        />
       </div>
 
       <Separator />
 
       <div className="space-y-3">
         <p className="text-sm font-medium">Voice Cloning</p>
-        <p className="text-xs text-muted-foreground">Method for cloning the source speaker&apos;s voice.</p>
-        {VOICE_CLONING_METHODS.map((m) => (
-          <button
-            type="button"
-            key={m.value}
-            className="flex w-full cursor-pointer items-center gap-3 rounded-md border border-border/40 p-3 text-left transition-colors hover:bg-accent/10 data-[checked=true]:border-primary/50 data-[checked=true]:bg-primary/5"
-            data-checked={settings.voiceCloning.includes(m.value)}
-            onClick={() => toggleSetting("voiceCloning", m.value)}
-          >
-            {settings.voiceCloning.includes(m.value) ? (
-              <CircleDotIcon className="size-4 shrink-0 text-primary" />
-            ) : (
-              <CircleIcon className="size-4 shrink-0 text-muted-foreground" />
-            )}
-            <div>
-              <div className="text-sm font-medium">{m.label}</div>
-              <div className="text-xs text-muted-foreground">{m.description}</div>
-            </div>
-          </button>
-        ))}
+        <p className="text-xs text-muted-foreground">Use source-speaker reference audio for translated speech.</p>
+        <ToggleChoice
+          checked={voiceCloningEnabled}
+          icon={WandSparklesIcon}
+          title="Voice Cloning"
+          description={VOICE_CLONING_METHODS[0].description}
+          onCheckedChange={(checked) => setSetting("voiceCloning", checked ? "chatterbox" : null)}
+        />
+        {voiceCloningEnabled && !diarizationEnabled ? (
+          <p className="text-xs text-muted-foreground">
+            With diarization off, voice cloning uses the default Chatterbox voice instead of per-speaker references.
+          </p>
+        ) : null}
       </div>
     </div>
   );

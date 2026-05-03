@@ -5,6 +5,7 @@ import {
   FilmIcon,
   VideoIcon,
   PlayIcon,
+  Settings2Icon,
 } from "lucide-react";
 import { SettingsDialog } from "./settings-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -23,7 +24,7 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar";
-import type { Video, PipelineState, VideoVariant } from "@/lib/types";
+import type { StudioSettings, Video, PipelineState, VideoVariant } from "@/lib/types";
 
 function getVideoStatus(
   video: Video,
@@ -45,6 +46,7 @@ function getVideoStatus(
 interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
   videos: Video[];
   selectedVideoId: string | null;
+  settings: StudioSettings;
   onSelectVideo: (videoId: string) => void;
   pipelineState: PipelineState;
   onStartPipeline: () => void;
@@ -53,11 +55,16 @@ interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
 export function AppSidebar({
   videos,
   selectedVideoId,
+  settings,
   onSelectVideo,
   pipelineState,
   onStartPipeline,
   ...props
 }: AppSidebarProps) {
+  const dubbingLabel = settings.dubbing.includes("aligned") ? "Aligned" : "Baseline";
+  const diarizationLabel = settings.diarization.includes("pyannote") ? "Diarization on" : "Diarization off";
+  const voiceLabel = settings.voiceCloning.includes("chatterbox") ? "Voice cloning on" : "Voice cloning off";
+
   return (
     <Sidebar {...props}>
       <SidebarHeader>
@@ -115,6 +122,21 @@ export function AppSidebar({
       </SidebarContent>
 
       <SidebarFooter>
+        <div className="rounded-md border border-sidebar-border/60 bg-sidebar-accent/30 p-2.5">
+          <div className="mb-2 flex items-center gap-2 text-xs font-medium">
+            <Settings2Icon className="size-3.5" />
+            Pipeline settings
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <Badge variant="outline" className="text-[10px]">{dubbingLabel}</Badge>
+            <Badge variant={settings.diarization.includes("pyannote") ? "secondary" : "outline"} className="text-[10px]">
+              {diarizationLabel}
+            </Badge>
+            <Badge variant={settings.voiceCloning.includes("chatterbox") ? "secondary" : "outline"} className="text-[10px]">
+              {voiceLabel}
+            </Badge>
+          </div>
+        </div>
         <div className="flex gap-2">
           <Button
             className="flex-1"

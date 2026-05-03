@@ -219,7 +219,7 @@ export function usePipeline(initialVariants: VideoVariant[] = [], initialVideoId
       const dl = await run("download", () => downloadVideo(video.url));
       await run("transcribe", () => transcribeVideo(dl.video_id, settings.useYoutubeCaptions));
 
-      if (settings.diarization.length > 0 || settings.voiceCloning.length > 0) {
+      if (settings.diarization.length > 0) {
         await run("diarize", () => diarizeVideo(dl.video_id));
       } else {
         dispatch({

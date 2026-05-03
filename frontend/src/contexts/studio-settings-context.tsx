@@ -10,6 +10,7 @@ type ArraySettingKey = {
 
 interface StudioSettingsContextValue {
   settings: StudioSettings;
+  setSetting: (group: ArraySettingKey, value: string | null) => void;
   toggleSetting: (group: ArraySettingKey, value: string) => void;
   toggleUseYoutubeCaptions: () => void;
 }
@@ -17,6 +18,7 @@ interface StudioSettingsContextValue {
 const StudioSettingsContext = createContext<StudioSettingsContextValue | null>(null);
 
 const SINGLE_SELECT: Set<ArraySettingKey> = new Set([
+  "dubbing",
   "diarization",
   "voiceCloning",
 ] as ArraySettingKey[]);
@@ -24,11 +26,15 @@ const SINGLE_SELECT: Set<ArraySettingKey> = new Set([
 export function StudioSettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<StudioSettings>(DEFAULT_STUDIO_SETTINGS);
 
+  const setSetting = useCallback((group: ArraySettingKey, value: string | null) => {
+    setSettings((prev) => ({ ...prev, [group]: value ? [value] : [] }));
+  }, []);
+
   const toggleSetting = useCallback((group: ArraySettingKey, value: string) => {
     setSettings((prev) => {
       const current = prev[group];
       if (SINGLE_SELECT.has(group)) {
-        const next = current.includes(value) ? [] : [value];
+        const next = group === "dubbing" || !current.includes(value) ? [value] : [];
         return { ...prev, [group]: next };
       }
       const next = current.includes(value)
@@ -43,7 +49,7 @@ export function StudioSettingsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <StudioSettingsContext.Provider value={{ settings, toggleSetting, toggleUseYoutubeCaptions }}>
+    <StudioSettingsContext.Provider value={{ settings, setSetting, toggleSetting, toggleUseYoutubeCaptions }}>
       {children}
     </StudioSettingsContext.Provider>
   );
