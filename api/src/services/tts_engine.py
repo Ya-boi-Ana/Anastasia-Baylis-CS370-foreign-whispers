@@ -55,6 +55,7 @@ _TTS_FAIL_FAST = os.getenv("FW_TTS_FAIL_FAST", "false").lower() in {
 _TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "2")))
 _TTS_LONG_FORM_GROUP_THRESHOLD = int(os.getenv("FW_TTS_LONG_FORM_GROUP_THRESHOLD", "500"))
 _TTS_LONG_FORM_GROUP_SEC = float(os.getenv("FW_TTS_LONG_FORM_GROUP_SEC", "45"))
+_TTS_LONG_FORM_ENGINE = os.getenv("FW_TTS_LONG_FORM_ENGINE", "flite").lower()
 _SYNTH_CACHE_VERSION = "v2"
 _EXTRACT_SEGMENT_VOICE_REFS = os.getenv("FW_TTS_EXTRACT_SEGMENT_VOICE_REFS", "false").lower() in {
     "1",
@@ -229,6 +230,35 @@ class FallbackTTSEngine:
         tone.export(file_path, format="wav")
 
 
+class FfmpegFliteTTSEngine:
+    """Fast local TTS for long-form renders where Chatterbox is too slow."""
+
+    def tts_to_file(self, text: str, file_path: str, **kwargs) -> None:
+        output = pathlib.Path(file_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        voice = str(kwargs.get("flite_voice") or "kal")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            text_path = pathlib.Path(tmpdir) / "speech.txt"
+            text_path.write_text(text.strip() or " ", encoding="utf-8")
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"flite=textfile={text_path}:voice={voice}",
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    str(output),
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+
 def _make_tts_engine():
     """Create TTS engine: Chatterbox API client if server is reachable, else local Coqui.
 
@@ -346,6 +376,7 @@ def _synth_cache_key(m: dict, speaker_wav: str | None, use_alignment: bool) -> s
         "version": _SYNTH_CACHE_VERSION,
         "text": m.get("text", ""),
         "speaker_wav": speaker_wav or "",
+        "engine": m.get("tts_engine", ""),
         "target_sec": round(float(m.get("target_sec", 0.0)), 3),
         "stretch_factor": round(float(m.get("stretch_factor", 1.0)), 3),
         "alignment": bool(use_alignment),
@@ -853,7 +884,8 @@ def text_file_to_speech(
     *alignment* overrides the module-level ``_ALIGNMENT_ENABLED`` flag.
     Pass True for aligned mode, False for baseline, or None to use the env var.
     """
-    engine = tts_engine if tts_engine is not None else _get_tts_engine()
+    engine_owned = tts_engine is None
+    engine = tts_engine
     use_alignment = alignment if alignment is not None else _ALIGNMENT_ENABLED
 
     save_name = pathlib.Path(source_path).stem + ".wav"
@@ -913,13 +945,18 @@ def text_file_to_speech(
         })
 
     synth_metas = _group_segment_metas(seg_metas)
-    if _TTS_LONG_FORM_GROUP_THRESHOLD > 0 and len(synth_metas) > _TTS_LONG_FORM_GROUP_THRESHOLD:
+    long_form_mode = _TTS_LONG_FORM_GROUP_THRESHOLD > 0 and len(synth_metas) > _TTS_LONG_FORM_GROUP_THRESHOLD
+    if long_form_mode:
         synth_metas = _group_segment_metas(
             seg_metas,
             max_duration_s=max(_MAX_SYNTH_GROUP_SEC, _TTS_LONG_FORM_GROUP_SEC),
             max_gap_s=3.0,
             flush_on_sentence=False,
         )
+        if engine_owned and _TTS_LONG_FORM_ENGINE == "flite":
+            engine = FfmpegFliteTTSEngine()
+    if engine is None:
+        engine = _get_tts_engine()
 
     # ── Phase 1: GPU synthesis (concurrent) ───────────────────────────
     # Submit all TTS calls to a thread pool so the GPU stays busy while
@@ -971,6 +1008,7 @@ def text_file_to_speech(
                 i = m["index"]
                 resolved_speaker_wav = _speaker_reference(m)
                 speaker_by_index[i] = resolved_speaker_wav
+                m["tts_engine"] = engine.__class__.__name__
                 cache_path = cache_dir / f"{_synth_cache_key(m, resolved_speaker_wav, use_alignment)}.wav"
                 raw_bytes = _read_cached_raw(cache_path)
                 if raw_bytes is not None:
