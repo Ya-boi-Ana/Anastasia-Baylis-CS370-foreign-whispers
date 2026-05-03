@@ -58,7 +58,7 @@ _TTS_FAIL_FAST = os.getenv("FW_TTS_FAIL_FAST", "false").lower() in {
 _TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "1")))
 _TTS_LONG_FORM_GROUP_THRESHOLD = int(os.getenv("FW_TTS_LONG_FORM_GROUP_THRESHOLD", "500"))
 _TTS_LONG_FORM_GROUP_SEC = float(os.getenv("FW_TTS_LONG_FORM_GROUP_SEC", "45"))
-_TTS_LONG_FORM_ENGINE = os.getenv("FW_TTS_LONG_FORM_ENGINE", "flite").lower()
+_TTS_LONG_FORM_ENGINE = os.getenv("FW_TTS_LONG_FORM_ENGINE", "chatterbox").lower()
 _SYNTH_CACHE_VERSION = "v4"
 _FLITE_VOICES = tuple(
     voice.strip()
@@ -1102,7 +1102,7 @@ def text_file_to_speech(
             max_gap_s=3.0,
             flush_on_sentence=False,
         )
-        if engine_owned and _TTS_LONG_FORM_ENGINE == "flite":
+        if engine_owned and _TTS_LONG_FORM_ENGINE == "flite" and not voice_cloning:
             engine = FfmpegFliteTTSEngine()
     if engine is None:
         engine = _get_tts_engine()

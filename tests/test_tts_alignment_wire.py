@@ -691,27 +691,29 @@ def test_text_file_to_speech_uses_fast_engine_for_long_form_owned_engine(tmp_pat
     assert (out_dir / f"{title}.wav").exists()
 
 
-def test_text_file_to_speech_uses_fast_engine_for_long_form_with_speaker_labels(tmp_path, monkeypatch):
+def test_text_file_to_speech_keeps_natural_engine_for_long_form_voice_cloning(tmp_path, monkeypatch):
     from api.src.services import tts_engine
     from api.src.services.tts_engine import text_file_to_speech
 
     monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_GROUP_THRESHOLD", 2)
     monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_GROUP_SEC", 3.0)
     monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_ENGINE", "flite")
-    monkeypatch.setattr(
-        tts_engine,
-        "_get_tts_engine",
-        lambda: (_ for _ in ()).throw(AssertionError("Chatterbox should not load")),
-    )
 
-    calls = {"count": 0}
+    calls = {"natural": 0, "flite": 0}
 
-    class FastEngine:
+    class NaturalEngine:
         def tts_to_file(self, text, file_path, **kwargs):
-            calls["count"] += 1
+            calls["natural"] += 1
             from pydub import AudioSegment
             AudioSegment.silent(duration=500).export(file_path, format="wav")
 
+    class FastEngine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            calls["flite"] += 1
+            from pydub import AudioSegment
+            AudioSegment.silent(duration=500).export(file_path, format="wav")
+
+    monkeypatch.setattr(tts_engine, "_get_tts_engine", lambda: NaturalEngine())
     monkeypatch.setattr(
         tts_engine,
         "FfmpegFliteTTSEngine",
@@ -736,7 +738,7 @@ def test_text_file_to_speech_uses_fast_engine_for_long_form_with_speaker_labels(
 
     text_file_to_speech(str(es_path), str(out_dir), voice_cloning=True)
 
-    assert calls["count"] == 1
+    assert calls == {"natural": 1, "flite": 0}
     assert (out_dir / f"{title}.wav").exists()
 
 

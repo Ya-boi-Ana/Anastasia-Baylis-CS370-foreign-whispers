@@ -283,3 +283,26 @@ def test_cached_audio_with_speaker_refs_is_current_for_diarized_voice_cloning(tm
         require_speaker_wav=True,
         require_speaker_profiles=True,
     ) is True
+
+
+def test_cached_audio_with_flite_voice_is_stale_for_diarized_voice_cloning(tmp_path):
+    from api.src.routers.tts import _cached_audio_is_current
+
+    wav = tmp_path / "Test Title.wav"
+    wav.write_bytes(b"RIFF")
+    wav.with_suffix(".align.json").write_text(json.dumps({
+        "timing_model": "non_overlapping_phrase_groups_v1",
+        "segments": [
+            {
+                "speaker": "SPEAKER_00",
+                "speaker_voice": "male-speaker-profile-00",
+                "speaker_gender": "male",
+                "speaker_wav": "es/SPEAKER_00.wav",
+                "flite_voice": "kal",
+                "raw_duration_s": 1.0,
+                "speed_factor": 1.0,
+            },
+        ],
+    }))
+
+    assert _cached_audio_is_current(wav, require_speaker_wav=True) is False
