@@ -334,8 +334,8 @@ def test_text_file_to_speech_does_not_extract_segment_refs_by_default(tmp_path):
     assert speaker_wavs == [None]
 
 
-def test_text_file_to_speech_does_not_auto_upload_resolved_refs_by_default(tmp_path):
-    """Diarized voice cloning defaults to stable non-upload synthesis."""
+def test_text_file_to_speech_uses_resolved_refs_for_speaker_matching(tmp_path):
+    """Diarized voice cloning should use extracted speaker refs when requested."""
     from api.src.services.tts_engine import text_file_to_speech
 
     es_dir = tmp_path / "translations" / "argos"
@@ -361,7 +361,7 @@ def test_text_file_to_speech_does_not_auto_upload_resolved_refs_by_default(tmp_p
     with patch("api.src.services.tts_engine.resolve_speaker_wav", return_value="es/SPEAKER_00.wav"):
         text_file_to_speech(str(es_path), str(out_dir), tts_engine=Engine(), voice_cloning=True)
 
-    assert speaker_wavs == [None]
+    assert speaker_wavs == ["es/SPEAKER_00.wav"]
 
 
 def test_speaker_color_preserves_duration():
@@ -529,6 +529,52 @@ def test_text_file_to_speech_uses_fast_engine_for_long_form_owned_engine(tmp_pat
     text_file_to_speech(str(es_path), str(out_dir))
 
     assert calls["count"] == 1
+    assert (out_dir / f"{title}.wav").exists()
+
+
+def test_text_file_to_speech_keeps_chatterbox_for_long_form_speaker_matching(tmp_path, monkeypatch):
+    from api.src.services import tts_engine
+    from api.src.services.tts_engine import text_file_to_speech
+
+    monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_GROUP_THRESHOLD", 2)
+    monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_GROUP_SEC", 3.0)
+    monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_ENGINE", "flite")
+    monkeypatch.setattr(
+        tts_engine,
+        "FfmpegFliteTTSEngine",
+        lambda: (_ for _ in ()).throw(AssertionError("fast fallback should not be used")),
+    )
+
+    speaker_wavs = []
+
+    class Engine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            speaker_wavs.append(kwargs.get("speaker_wav"))
+            from pydub import AudioSegment
+            AudioSegment.silent(duration=500).export(file_path, format="wav")
+
+    monkeypatch.setattr(tts_engine, "_get_tts_engine", lambda: Engine())
+    monkeypatch.setattr(tts_engine, "resolve_speaker_wav", lambda *args: "es/SPEAKER_00.wav")
+
+    es_dir = tmp_path / "translations" / "argos"
+    es_dir.mkdir(parents=True)
+    title = "long_form_speaker_match"
+    es_path = es_dir / f"{title}.json"
+    es_path.write_text(json.dumps({
+        "language": "es",
+        "text": "Uno. Dos. Tres.",
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "Uno.", "speaker": "SPEAKER_00"},
+            {"start": 1.0, "end": 2.0, "text": "Dos.", "speaker": "SPEAKER_00"},
+            {"start": 2.0, "end": 3.0, "text": "Tres.", "speaker": "SPEAKER_00"},
+        ],
+    }))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    text_file_to_speech(str(es_path), str(out_dir), voice_cloning=True)
+
+    assert speaker_wavs == ["es/SPEAKER_00.wav"]
     assert (out_dir / f"{title}.wav").exists()
 
 

@@ -69,6 +69,12 @@ _AUTO_VOICE_CLONING = os.getenv("FW_TTS_AUTO_VOICE_CLONING", "false").lower() in
     "yes",
     "on",
 }
+_MATCH_SPEAKER_REFS = os.getenv("FW_TTS_MATCH_SPEAKER_REFS", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 _SPEAKER_COLORING = os.getenv("FW_TTS_SPEAKER_COLORING", "true").lower() in {
     "1",
     "true",
@@ -946,6 +952,8 @@ def text_file_to_speech(
 
     synth_metas = _group_segment_metas(seg_metas)
     long_form_mode = _TTS_LONG_FORM_GROUP_THRESHOLD > 0 and len(synth_metas) > _TTS_LONG_FORM_GROUP_THRESHOLD
+    has_speaker_labels = any(meta.get("speaker") for meta in seg_metas)
+    wants_speaker_matching = bool(voice_cloning and has_speaker_labels)
     if long_form_mode:
         synth_metas = _group_segment_metas(
             seg_metas,
@@ -953,7 +961,7 @@ def text_file_to_speech(
             max_gap_s=3.0,
             flush_on_sentence=False,
         )
-        if engine_owned and _TTS_LONG_FORM_ENGINE == "flite":
+        if engine_owned and _TTS_LONG_FORM_ENGINE == "flite" and not wants_speaker_matching:
             engine = FfmpegFliteTTSEngine()
     if engine is None:
         engine = _get_tts_engine()
@@ -985,7 +993,7 @@ def text_file_to_speech(
                 return None
             if speaker_wav:
                 return speaker_wav
-            if not _AUTO_VOICE_CLONING:
+            if not (_AUTO_VOICE_CLONING or _MATCH_SPEAKER_REFS):
                 return None
             try:
                 return resolve_speaker_wav(speakers_base, target_language, m.get("speaker"))
