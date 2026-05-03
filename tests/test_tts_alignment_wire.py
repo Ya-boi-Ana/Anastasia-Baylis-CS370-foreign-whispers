@@ -334,8 +334,8 @@ def test_text_file_to_speech_does_not_extract_segment_refs_by_default(tmp_path):
     assert speaker_wavs == [None]
 
 
-def test_text_file_to_speech_uses_resolved_refs_for_speaker_matching(tmp_path):
-    """Diarized voice cloning should use extracted speaker refs when requested."""
+def test_text_file_to_speech_does_not_auto_upload_speaker_refs_by_default(tmp_path):
+    """Diarized voice cloning should stay on the stable default endpoint by default."""
     from api.src.services.tts_engine import text_file_to_speech
 
     es_dir = tmp_path / "translations" / "argos"
@@ -360,6 +360,40 @@ def test_text_file_to_speech_uses_resolved_refs_for_speaker_matching(tmp_path):
 
     with patch("api.src.services.tts_engine.resolve_speaker_wav", return_value="es/SPEAKER_00.wav"):
         text_file_to_speech(str(es_path), str(out_dir), tts_engine=Engine(), voice_cloning=True)
+
+    assert speaker_wavs == [None]
+
+
+def test_text_file_to_speech_uses_resolved_refs_when_speaker_matching_enabled(tmp_path, monkeypatch):
+    """Automatic speaker refs are still available behind an explicit stability gate."""
+    from api.src.services import tts_engine
+    from api.src.services.tts_engine import text_file_to_speech
+
+    monkeypatch.setattr(tts_engine, "_MATCH_SPEAKER_REFS", True)
+
+    es_dir = tmp_path / "translations" / "argos"
+    es_dir.mkdir(parents=True)
+    title = "voice_resolved_opt_in"
+    es_path = es_dir / f"{title}.json"
+    es_path.write_text(json.dumps({
+        "language": "es",
+        "text": "Hola",
+        "segments": [{"start": 0.0, "end": 1.0, "text": "Hola", "speaker": "SPEAKER_00"}],
+    }))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    speaker_wavs = []
+
+    class Engine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            speaker_wavs.append(kwargs.get("speaker_wav"))
+            from pydub import AudioSegment
+            AudioSegment.silent(duration=500).export(file_path, format="wav")
+
+    monkeypatch.setattr(tts_engine, "resolve_speaker_wav", lambda *args: "es/SPEAKER_00.wav")
+
+    text_file_to_speech(str(es_path), str(out_dir), tts_engine=Engine(), voice_cloning=True)
 
     assert speaker_wavs == ["es/SPEAKER_00.wav"]
 
@@ -532,7 +566,7 @@ def test_text_file_to_speech_uses_fast_engine_for_long_form_owned_engine(tmp_pat
     assert (out_dir / f"{title}.wav").exists()
 
 
-def test_text_file_to_speech_keeps_chatterbox_for_long_form_speaker_matching(tmp_path, monkeypatch):
+def test_text_file_to_speech_uses_fast_engine_for_long_form_with_speaker_labels(tmp_path, monkeypatch):
     from api.src.services import tts_engine
     from api.src.services.tts_engine import text_file_to_speech
 
@@ -541,20 +575,23 @@ def test_text_file_to_speech_keeps_chatterbox_for_long_form_speaker_matching(tmp
     monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_ENGINE", "flite")
     monkeypatch.setattr(
         tts_engine,
-        "FfmpegFliteTTSEngine",
-        lambda: (_ for _ in ()).throw(AssertionError("fast fallback should not be used")),
+        "_get_tts_engine",
+        lambda: (_ for _ in ()).throw(AssertionError("Chatterbox should not load")),
     )
 
-    speaker_wavs = []
+    calls = {"count": 0}
 
-    class Engine:
+    class FastEngine:
         def tts_to_file(self, text, file_path, **kwargs):
-            speaker_wavs.append(kwargs.get("speaker_wav"))
+            calls["count"] += 1
             from pydub import AudioSegment
             AudioSegment.silent(duration=500).export(file_path, format="wav")
 
-    monkeypatch.setattr(tts_engine, "_get_tts_engine", lambda: Engine())
-    monkeypatch.setattr(tts_engine, "resolve_speaker_wav", lambda *args: "es/SPEAKER_00.wav")
+    monkeypatch.setattr(
+        tts_engine,
+        "FfmpegFliteTTSEngine",
+        FastEngine,
+    )
 
     es_dir = tmp_path / "translations" / "argos"
     es_dir.mkdir(parents=True)
@@ -574,7 +611,7 @@ def test_text_file_to_speech_keeps_chatterbox_for_long_form_speaker_matching(tmp
 
     text_file_to_speech(str(es_path), str(out_dir), voice_cloning=True)
 
-    assert speaker_wavs == ["es/SPEAKER_00.wav"]
+    assert calls["count"] == 1
     assert (out_dir / f"{title}.wav").exists()
 
 
