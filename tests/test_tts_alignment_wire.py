@@ -666,6 +666,41 @@ def test_chatterbox_ignores_empty_speaker_wav(tmp_path, monkeypatch):
     assert called["default"] is True
 
 
+def test_chatterbox_client_serializes_concurrent_calls(tmp_path, monkeypatch):
+    import threading
+    import time
+    from api.src.services.tts_engine import ChatterboxClient
+
+    active = 0
+    max_active = 0
+    guard = threading.Lock()
+
+    def fake_default(self, text):
+        nonlocal active, max_active
+        with guard:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with guard:
+            active -= 1
+        return b"RIFFfake"
+
+    monkeypatch.setattr(ChatterboxClient, "_synthesize_default", fake_default)
+
+    client = ChatterboxClient(base_url="http://tts")
+    threads = [
+        threading.Thread(target=client.tts_to_file, args=("hola", str(tmp_path / f"{i}.wav")))
+        for i in range(3)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert max_active == 1
+    assert all((tmp_path / f"{i}.wav").exists() for i in range(3))
+
+
 def test_chatterbox_rewinds_upload_file_on_retry(tmp_path, monkeypatch):
     import requests
     from api.src.services.tts_engine import ChatterboxClient

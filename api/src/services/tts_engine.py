@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import hashlib
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -52,7 +53,7 @@ _TTS_FAIL_FAST = os.getenv("FW_TTS_FAIL_FAST", "false").lower() in {
     "yes",
     "on",
 }
-_TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "2")))
+_TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "1")))
 _TTS_LONG_FORM_GROUP_THRESHOLD = int(os.getenv("FW_TTS_LONG_FORM_GROUP_THRESHOLD", "500"))
 _TTS_LONG_FORM_GROUP_SEC = float(os.getenv("FW_TTS_LONG_FORM_GROUP_SEC", "45"))
 _TTS_LONG_FORM_ENGINE = os.getenv("FW_TTS_LONG_FORM_ENGINE", "flite").lower()
@@ -81,6 +82,7 @@ _SPEAKER_COLORING = os.getenv("FW_TTS_SPEAKER_COLORING", "true").lower() in {
     "yes",
     "on",
 }
+_CHATTERBOX_LOCK = threading.Lock()
 
 
 class ChatterboxClient:
@@ -102,29 +104,30 @@ class ChatterboxClient:
         /v1/audio/speech/upload endpoint with the reference WAV for voice cloning.
         Otherwise uses /v1/audio/speech with the server's default voice.
         """
-        chunks = self._split_text(text) if len(text) > _TTS_CHUNK_CHARS else [text]
-        wav_parts = []
+        with _CHATTERBOX_LOCK:
+            chunks = self._split_text(text) if len(text) > _TTS_CHUNK_CHARS else [text]
+            wav_parts = []
 
-        speaker_wav = kwargs.get("speaker_wav", self.speaker_wav)
+            speaker_wav = kwargs.get("speaker_wav", self.speaker_wav)
 
-        for chunk in chunks:
-            if speaker_wav:
-                # Voice cloning: upload the reference WAV
-                wav_parts.append(self._synthesize_with_voice(chunk, speaker_wav))
+            for chunk in chunks:
+                if speaker_wav:
+                    # Voice cloning: upload the reference WAV
+                    wav_parts.append(self._synthesize_with_voice(chunk, speaker_wav))
+                else:
+                    # Default voice
+                    wav_parts.append(self._synthesize_default(chunk))
+
+            if len(wav_parts) == 1:
+                pathlib.Path(file_path).write_bytes(wav_parts[0])
             else:
-                # Default voice
-                wav_parts.append(self._synthesize_default(chunk))
-
-        if len(wav_parts) == 1:
-            pathlib.Path(file_path).write_bytes(wav_parts[0])
-        else:
-            combined = AudioSegment.empty()
-            for part in wav_parts:
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-                    tmp.write(part)
-                    tmp.flush()
-                    combined += AudioSegment.from_wav(tmp.name)
-            combined.export(file_path, format="wav")
+                combined = AudioSegment.empty()
+                for part in wav_parts:
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+                        tmp.write(part)
+                        tmp.flush()
+                        combined += AudioSegment.from_wav(tmp.name)
+                combined.export(file_path, format="wav")
 
     def _synthesize_default(self, text: str) -> bytes:
         """Call /v1/audio/speech with the server's default voice."""
