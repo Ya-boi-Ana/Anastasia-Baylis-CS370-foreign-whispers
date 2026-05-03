@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     hf_token: str = ""
     # Skip pyannote on very long videos; it can exhaust memory and kill the API.
     diarization_max_seconds: float = 1800.0
+    # For videos above diarization_max_seconds, diarize in bounded chunks.
+    diarization_chunk_seconds: float = 600.0
 
     # Logfire write token — set via FW_LOGFIRE_WRITE_TOKEN (or put in .env)
     logfire_write_token: str = ""

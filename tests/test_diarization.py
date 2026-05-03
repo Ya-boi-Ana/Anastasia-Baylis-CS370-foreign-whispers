@@ -203,26 +203,58 @@ def test_extract_speaker_references_skips_failed_ref(tmp_path, monkeypatch):
     assert not (speakers_dir / "Demo__SPEAKER_00.wav").exists()
 
 
-def test_diarize_endpoint_skips_videos_above_duration_limit(tmp_path, monkeypatch):
+def test_diarize_endpoint_chunks_videos_above_duration_limit(tmp_path, monkeypatch):
     import asyncio
+    import json
     import api.src.routers.diarize as mod
 
     data_dir = tmp_path / "api"
     videos = data_dir / "videos"
     videos.mkdir(parents=True)
     (videos / "Demo.mp4").write_bytes(b"video")
+    transcriptions = data_dir / "transcriptions" / "whisper"
+    translations = data_dir / "translations" / "argos"
+    transcriptions.mkdir(parents=True)
+    translations.mkdir(parents=True)
+    payload = {
+        "segments": [
+            {"start": 0.0, "end": 30.0, "text": "A"},
+            {"start": 60.0, "end": 90.0, "text": "B"},
+        ]
+    }
+    (transcriptions / "Demo.json").write_text(json.dumps(payload))
+    (translations / "Demo.json").write_text(json.dumps(payload))
 
-    def fail_run(*args, **kwargs):
-        raise AssertionError("ffmpeg should not run when duration limit is exceeded")
+    ffmpeg_outputs = []
+
+    def fake_run(cmd, **kwargs):
+        from pathlib import Path
+        output = Path(cmd[-1])
+        ffmpeg_outputs.append(output.name)
+        output.write_bytes(b"RIFF" + b"\0" * 100)
 
     monkeypatch.setattr(mod.settings, "data_dir", data_dir)
     monkeypatch.setattr(mod.settings, "diarization_max_seconds", 10.0)
+    monkeypatch.setattr(mod.settings, "diarization_chunk_seconds", 60.0)
     monkeypatch.setattr(mod, "resolve_title", lambda video_id: "Demo")
-    monkeypatch.setattr(mod, "_probe_media_duration_seconds", lambda path: 11.0)
-    monkeypatch.setattr(mod.subprocess, "run", fail_run)
+    monkeypatch.setattr(mod, "_probe_media_duration_seconds", lambda path: 121.0)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    async def fake_extract_refs(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mod, "_extract_speaker_references", fake_extract_refs)
+
+    def fake_diarize(path):
+        if "chunk0001" in path:
+            return [{"start_s": 1.0, "end_s": 2.0, "speaker": "SPEAKER_01"}]
+        return [{"start_s": 1.0, "end_s": 2.0, "speaker": "SPEAKER_00"}]
+
+    monkeypatch.setattr(mod._alignment_service, "diarize", fake_diarize)
 
     response = asyncio.run(mod.diarize_endpoint("demo-id"))
 
-    assert response.skipped is True
-    assert response.segments == []
-    assert response.speakers == []
+    assert response.skipped is False
+    assert response.speakers == ["SPEAKER_00", "SPEAKER_01"]
+    assert [segment.start_s for segment in response.segments] == [1.0, 61.0, 121.0]
+    assert any(name.endswith(".chunk0000.wav") for name in ffmpeg_outputs)
+    assert (data_dir / "diarizations" / "Demo.json").exists()

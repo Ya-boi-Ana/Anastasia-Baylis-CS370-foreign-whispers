@@ -4,6 +4,8 @@ import asyncio
 import json
 import subprocess
 import re
+import tempfile
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
@@ -43,6 +45,73 @@ def _probe_media_duration_seconds(path) -> float | None:
 def _diarization_too_long(duration_s: float | None) -> bool:
     limit_s = float(getattr(settings, "diarization_max_seconds", 0.0) or 0.0)
     return bool(limit_s > 0 and duration_s is not None and duration_s > limit_s)
+
+
+async def _extract_audio(
+    video_path: Path,
+    audio_path: Path,
+    *,
+    start_s: float | None = None,
+    duration_s: float | None = None,
+) -> None:
+    cmd = ["ffmpeg", "-y"]
+    if start_s is not None:
+        cmd.extend(["-ss", f"{max(0.0, start_s):.3f}"])
+    cmd.extend(["-i", str(video_path)])
+    if duration_s is not None:
+        cmd.extend(["-t", f"{max(0.001, duration_s):.3f}"])
+    cmd.extend([
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        str(audio_path),
+    ])
+    await asyncio.to_thread(subprocess.run, cmd, check=True, capture_output=True)
+
+
+async def _diarize_video_audio(
+    video_path: Path,
+    diar_dir: Path,
+    title: str,
+    duration_s: float | None,
+) -> list[dict]:
+    if not _diarization_too_long(duration_s):
+        audio_path = diar_dir / f"{title}.wav"
+        await _extract_audio(video_path, audio_path)
+        return _alignment_service.diarize(str(audio_path))
+
+    chunk_s = float(getattr(settings, "diarization_chunk_seconds", 600.0) or 600.0)
+    chunk_s = max(60.0, chunk_s)
+    all_segments: list[dict] = []
+
+    with tempfile.TemporaryDirectory(prefix="diar_chunks_", dir=diar_dir) as tmp:
+        tmp_dir = Path(tmp)
+        start_s = 0.0
+        chunk_index = 0
+        while start_s < float(duration_s or 0.0):
+            remaining_s = float(duration_s or 0.0) - start_s
+            this_duration_s = min(chunk_s, remaining_s)
+            chunk_path = tmp_dir / f"{title}.chunk{chunk_index:04d}.wav"
+            await _extract_audio(
+                video_path,
+                chunk_path,
+                start_s=start_s,
+                duration_s=this_duration_s,
+            )
+            chunk_segments = _alignment_service.diarize(str(chunk_path))
+            for segment in chunk_segments:
+                shifted = dict(segment)
+                shifted["start_s"] = float(segment.get("start_s", 0.0)) + start_s
+                shifted["end_s"] = float(segment.get("end_s", 0.0)) + start_s
+                all_segments.append(shifted)
+            start_s += this_duration_s
+            chunk_index += 1
+
+    return all_segments
 
 
 def _speaker_namespace(title: str) -> str:
@@ -173,41 +242,14 @@ async def diarize_endpoint(video_id: str):
     if not video_path.exists():
         raise HTTPException(status_code=404, detail=f"Video file for {video_id} not found")
 
-    duration_s = await asyncio.to_thread(_probe_media_duration_seconds, video_path)
-    if _diarization_too_long(duration_s):
-        return DiarizeResponse(
-            video_id=video_id,
-            speakers=[],
-            segments=[],
-            skipped=True,
-        )
-
-    audio_path = diar_dir / f"{title}.wav"
     try:
-        await asyncio.to_thread(
-            subprocess.run,
-            [
-                "ffmpeg",
-                "-i",
-                str(video_path),
-                "-vn",
-                "-acodec",
-                "pcm_s16le",
-                "-ar",
-                "16000",
-                "-y",
-                str(audio_path),
-            ],
-            check=True,
-            capture_output=True,
-        )
+        duration_s = await asyncio.to_thread(_probe_media_duration_seconds, video_path)
+        diar_segments = await _diarize_video_audio(video_path, diar_dir, title, duration_s)
     except subprocess.CalledProcessError as exc:
         raise HTTPException(
             status_code=500,
             detail=f"Diarization audio extraction failed: {exc.stderr.decode(errors='ignore')}"
         )
-
-    diar_segments = _alignment_service.diarize(str(audio_path))
     speakers = sorted({segment["speaker"] for segment in diar_segments})
 
     if not diar_segments:
