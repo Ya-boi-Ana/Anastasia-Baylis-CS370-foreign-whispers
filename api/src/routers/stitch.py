@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api")
 
 _stitch_service = StitchService(ui_dir=settings.data_dir)
 _CAPTION_HEADERS = {"Cache-Control": "no-store"}
+_MEDIA_HEADERS = {"Cache-Control": "no-store", "Accept-Ranges": "bytes"}
 
 
 def _completed_variants() -> list[dict]:
@@ -304,6 +305,7 @@ def _serve_video(file_path: pathlib.Path, request: Request):
             status_code=206,
             media_type="video/mp4",
             headers={
+                "Cache-Control": "no-store",
                 "Content-Range": f"bytes {start}-{end}/{file_size}",
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(chunk_size),
@@ -313,7 +315,7 @@ def _serve_video(file_path: pathlib.Path, request: Request):
     return FileResponse(
         str(file_path),
         media_type="video/mp4",
-        headers={"Accept-Ranges": "bytes"},
+        headers=_MEDIA_HEADERS,
     )
 
 

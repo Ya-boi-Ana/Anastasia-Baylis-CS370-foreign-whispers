@@ -15,6 +15,7 @@ from api.src.services.tts_service import TTSService
 
 router = APIRouter(prefix="/api")
 _tts_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
+_AUDIO_HEADERS = {"Cache-Control": "no-store"}
 
 
 def _cached_audio_is_current(
@@ -156,4 +157,4 @@ async def get_audio(
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail="Audio file not found")
 
-    return FileResponse(str(audio_path), media_type="audio/wav")
+    return FileResponse(str(audio_path), media_type="audio/wav", headers=_AUDIO_HEADERS)

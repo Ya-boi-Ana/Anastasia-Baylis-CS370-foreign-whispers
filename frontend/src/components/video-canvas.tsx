@@ -25,7 +25,9 @@ export function VideoCanvas({
     (v) => v.sourceVideoId === videoId && v.status === "complete"
   );
 
-  const activeVariant = variants.find((v) => v.id === activeVariantId);
+  const activeVariant = variants.find(
+    (v) => v.id === activeVariantId && v.sourceVideoId === videoId
+  );
   const configId = activeVariant?.configId ?? "";
 
   // Determine what to show in the canvas
