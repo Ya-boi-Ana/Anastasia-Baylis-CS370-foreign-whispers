@@ -49,7 +49,7 @@ _TTS_RETRIES = int(os.getenv("FW_TTS_RETRIES", "3"))
 _TTS_RETRY_BACKOFF_SEC = float(os.getenv("FW_TTS_RETRY_BACKOFF_SEC", "1.5"))
 _TTS_CHUNK_CHARS = int(os.getenv("FW_TTS_CHUNK_CHARS", "260"))
 _MAX_CONSECUTIVE_TTS_FAILURES = int(os.getenv("FW_TTS_MAX_CONSECUTIVE_FAILURES", "5"))
-_TTS_FAIL_FAST = os.getenv("FW_TTS_FAIL_FAST", "false").lower() in {
+_TTS_FAIL_FAST = os.getenv("FW_TTS_FAIL_FAST", "true").lower() in {
     "1",
     "true",
     "yes",
@@ -59,7 +59,7 @@ _TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "1")))
 _TTS_LONG_FORM_GROUP_THRESHOLD = int(os.getenv("FW_TTS_LONG_FORM_GROUP_THRESHOLD", "500"))
 _TTS_LONG_FORM_GROUP_SEC = float(os.getenv("FW_TTS_LONG_FORM_GROUP_SEC", "45"))
 _TTS_LONG_FORM_ENGINE = os.getenv("FW_TTS_LONG_FORM_ENGINE", "chatterbox").lower()
-_SYNTH_CACHE_VERSION = "v4"
+_SYNTH_CACHE_VERSION = "v5"
 _FLITE_VOICES = tuple(
     voice.strip()
     for voice in os.getenv("FW_TTS_FLITE_VOICES", "kal,slt,awb,rms").split(",")
@@ -1242,6 +1242,12 @@ def text_file_to_speech(
             if seg_audio is not None:
                 combined += seg_audio
                 cursor_ms += len(seg_audio)
+
+        if failed_count and _TTS_FAIL_FAST:
+            raise RuntimeError(
+                f"TTS backend produced {failed_count} silent fallback segment(s); "
+                "restart the TTS backend and rerun synthesis"
+            )
 
         combined.export(str(save_path), format="wav")
 

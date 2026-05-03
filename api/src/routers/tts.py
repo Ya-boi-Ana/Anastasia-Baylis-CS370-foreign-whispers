@@ -44,6 +44,8 @@ def _cached_audio_is_current(
     segments = report.get("segments", [])
     if segments:
         failures = sum(1 for segment in segments if segment.get("raw_duration_s") == 0)
+        if failures and (require_speaker_wav or require_speaker_profiles):
+            return False
         if failures / len(segments) > 0.2:
             return False
 
