@@ -247,6 +247,7 @@ def test_cached_audio_with_speaker_profiles_is_current_for_diarized_tts(tmp_path
             {
                 "speaker": "SPEAKER_00",
                 "speaker_voice": "speaker-profile-01",
+                "speaker_gender": "female",
                 "speaker_wav": None,
                 "raw_duration_s": 1.0,
                 "speed_factor": 1.0,

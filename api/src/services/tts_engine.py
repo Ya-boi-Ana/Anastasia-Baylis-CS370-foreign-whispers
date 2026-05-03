@@ -10,9 +10,11 @@ import tempfile
 import time
 import hashlib
 import threading
+import functools
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+import numpy as np
 import librosa
 import soundfile as sf
 import pyrubberband
@@ -57,12 +59,23 @@ _TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "1")))
 _TTS_LONG_FORM_GROUP_THRESHOLD = int(os.getenv("FW_TTS_LONG_FORM_GROUP_THRESHOLD", "500"))
 _TTS_LONG_FORM_GROUP_SEC = float(os.getenv("FW_TTS_LONG_FORM_GROUP_SEC", "45"))
 _TTS_LONG_FORM_ENGINE = os.getenv("FW_TTS_LONG_FORM_ENGINE", "flite").lower()
-_SYNTH_CACHE_VERSION = "v3"
+_SYNTH_CACHE_VERSION = "v4"
 _FLITE_VOICES = tuple(
     voice.strip()
     for voice in os.getenv("FW_TTS_FLITE_VOICES", "kal,slt,awb,rms").split(",")
     if voice.strip()
 ) or ("kal",)
+_FLITE_MALE_VOICES = tuple(
+    voice.strip()
+    for voice in os.getenv("FW_TTS_FLITE_MALE_VOICES", "kal,awb,rms").split(",")
+    if voice.strip()
+) or _FLITE_VOICES
+_FLITE_FEMALE_VOICES = tuple(
+    voice.strip()
+    for voice in os.getenv("FW_TTS_FLITE_FEMALE_VOICES", "slt").split(",")
+    if voice.strip()
+) or _FLITE_VOICES
+_REFERENCE_F0_GENDER_THRESHOLD_HZ = float(os.getenv("FW_TTS_GENDER_F0_THRESHOLD_HZ", "165"))
 _EXTRACT_SEGMENT_VOICE_REFS = os.getenv("FW_TTS_EXTRACT_SEGMENT_VOICE_REFS", "false").lower() in {
     "1",
     "true",
@@ -370,6 +383,7 @@ def _synthesize_raw(
     wav_path: str,
     speaker_wav: str | None = None,
     speaker: str | None = None,
+    speaker_gender: str | None = None,
 ) -> bytes | None:
     """GPU-bound: call TTS engine and return raw WAV bytes, or None on failure."""
     if not text or not text.strip():
@@ -378,7 +392,7 @@ def _synthesize_raw(
         kwargs = {}
         if speaker_wav:
             kwargs["speaker_wav"] = speaker_wav
-        flite_voice = _flite_voice_for_speaker(speaker)
+        flite_voice = _flite_voice_for_speaker(speaker, speaker_gender)
         if flite_voice and tts_engine.__class__.__name__ == "FfmpegFliteTTSEngine":
             kwargs["flite_voice"] = flite_voice
         tts_engine.tts_to_file(text=text, file_path=wav_path, **kwargs)
@@ -407,6 +421,7 @@ def _synth_cache_key(m: dict, speaker_wav: str | None, use_alignment: bool) -> s
         "stretch_factor": round(float(m.get("stretch_factor", 1.0)), 3),
         "alignment": bool(use_alignment),
         "speaker_voice": m.get("speaker_voice") or "",
+        "speaker_gender": m.get("speaker_gender") or "",
         "flite_voice": m.get("flite_voice") or "",
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -459,6 +474,7 @@ def _synthesize_pending_raw(
                     item["wav_path"],
                     speaker_wav=item["speaker_wav"],
                     speaker=item.get("speaker"),
+                    speaker_gender=item.get("speaker_gender"),
                 )
             except Exception as exc:
                 print(f"[tts] TTS failed for segment ({exc}), using silence")
@@ -485,6 +501,7 @@ def _synthesize_pending_raw(
                 item["wav_path"],
                 speaker_wav=item["speaker_wav"],
                 speaker=item.get("speaker"),
+                speaker_gender=item.get("speaker_gender"),
             ): item
             for item in pending
         }
@@ -621,12 +638,16 @@ def _group_segment_metas(
     return groups
 
 
-def _apply_speaker_color(audio: AudioSegment, speaker: str | None) -> AudioSegment:
+def _apply_speaker_color(
+    audio: AudioSegment,
+    speaker: str | None,
+    speaker_gender: str | None = None,
+) -> AudioSegment:
     """Give diarized speakers stable tonal differences without voice uploads."""
     if not _SPEAKER_COLORING or not speaker:
         return audio
 
-    profile = _speaker_profile(speaker)
+    profile = _speaker_profile(speaker, speaker_gender)
     original_ms = len(audio)
     pitch_steps = [-4.5, 4.5, -3.5, 3.5, -2.5, 2.5, -1.5, 1.5, -5.5, 5.5, -0.8, 0.8][profile]
     pitched = _shift_audio_pitch(audio, pitch_steps)
@@ -661,21 +682,95 @@ def _apply_speaker_color(audio: AudioSegment, speaker: str | None) -> AudioSegme
     return colored[:original_ms]
 
 
-def _speaker_profile(speaker: str | None) -> int:
+def _speaker_profile(speaker: str | None, speaker_gender: str | None = None) -> int:
     if not speaker:
         return 0
     digest = int(hashlib.sha256(speaker.encode("utf-8")).hexdigest()[:8], 16)
+    gender = (speaker_gender or "").lower()
+    if gender == "male":
+        profiles = (0, 2, 4, 6, 8, 10)
+        return profiles[digest % len(profiles)]
+    if gender == "female":
+        profiles = (1, 3, 5, 7, 9, 11)
+        return profiles[digest % len(profiles)]
     return digest % 12
 
 
-def _speaker_voice_id(speaker: str | None) -> str:
-    return f"speaker-profile-{_speaker_profile(speaker):02d}" if speaker else ""
+def _speaker_voice_id(speaker: str | None, speaker_gender: str | None = None) -> str:
+    if not speaker:
+        return ""
+    gender = (speaker_gender or "unknown").lower()
+    return f"{gender}-speaker-profile-{_speaker_profile(speaker, gender):02d}"
 
 
-def _flite_voice_for_speaker(speaker: str | None) -> str | None:
+def _flite_voice_for_speaker(speaker: str | None, speaker_gender: str | None = None) -> str | None:
     if not speaker or not _FLITE_VOICES:
         return None
-    return _FLITE_VOICES[_speaker_profile(speaker) % len(_FLITE_VOICES)]
+    gender = (speaker_gender or "").lower()
+    if gender == "male":
+        voices = _FLITE_MALE_VOICES
+    elif gender == "female":
+        voices = _FLITE_FEMALE_VOICES
+    else:
+        voices = _FLITE_VOICES
+    return voices[_speaker_profile(speaker, gender) % len(voices)]
+
+
+def _speaker_reference_path(
+    speakers_base: pathlib.Path,
+    target_language: str,
+    speaker: str | None,
+) -> pathlib.Path | None:
+    if not speaker:
+        return None
+    target_language = target_language.lower().strip()
+    for candidate in (
+        speakers_base / target_language / f"{speaker}.wav",
+        speakers_base / "es" / f"{speaker}.wav",
+    ):
+        if candidate.exists() and candidate.stat().st_size > 44:
+            return candidate
+    return None
+
+
+def _fallback_speaker_gender(speaker: str | None) -> str:
+    if not speaker:
+        return "unknown"
+    return "male" if _speaker_profile(speaker) % 2 == 0 else "female"
+
+
+@functools.lru_cache(maxsize=512)
+def _estimate_reference_gender_cached(path: str) -> str:
+    try:
+        audio, sr = librosa.load(path, sr=16000, mono=True)
+        if getattr(audio, "size", 0) < sr // 4:
+            return "unknown"
+        f0, _, _ = librosa.pyin(
+            audio,
+            fmin=70,
+            fmax=400,
+            sr=sr,
+            frame_length=1024,
+        )
+        voiced = f0[~np.isnan(f0)]
+        if len(voiced) < 3:
+            return "unknown"
+        median_f0 = float(sorted(voiced)[len(voiced) // 2])
+    except Exception:
+        return "unknown"
+    return "male" if median_f0 < _REFERENCE_F0_GENDER_THRESHOLD_HZ else "female"
+
+
+def _speaker_gender(
+    speakers_base: pathlib.Path,
+    target_language: str,
+    speaker: str | None,
+) -> str:
+    ref_path = _speaker_reference_path(speakers_base, target_language, speaker)
+    if ref_path is None:
+        return _fallback_speaker_gender(speaker)
+    detected = _estimate_reference_gender_cached(str(ref_path))
+    return detected if detected in {"male", "female"} else _fallback_speaker_gender(speaker)
 
 
 def _shift_audio_pitch(audio: AudioSegment, semitones: float) -> AudioSegment:
@@ -1063,9 +1158,14 @@ def text_file_to_speech(
                 resolved_speaker_wav = _speaker_reference(m)
                 speaker_by_index[i] = resolved_speaker_wav
                 m["tts_engine"] = engine.__class__.__name__
-                m["speaker_voice"] = _speaker_voice_id(m.get("speaker")) if voice_cloning else ""
+                m["speaker_gender"] = (
+                    _speaker_gender(speakers_base, target_language, m.get("speaker"))
+                    if voice_cloning and m.get("speaker")
+                    else ""
+                )
+                m["speaker_voice"] = _speaker_voice_id(m.get("speaker"), m.get("speaker_gender")) if voice_cloning else ""
                 m["flite_voice"] = (
-                    _flite_voice_for_speaker(m.get("speaker"))
+                    _flite_voice_for_speaker(m.get("speaker"), m.get("speaker_gender"))
                     if voice_cloning and engine.__class__.__name__ == "FfmpegFliteTTSEngine"
                     else ""
                 )
@@ -1080,6 +1180,7 @@ def text_file_to_speech(
                     "index": i,
                     "text": m["text"],
                     "speaker": m.get("speaker"),
+                    "speaker_gender": m.get("speaker_gender"),
                     "speaker_wav": resolved_speaker_wav,
                     "wav_path": str(pathlib.Path(synth_dir) / f"seg_{i}.wav"),
                     "cache_path": cache_path,
@@ -1119,7 +1220,7 @@ def text_file_to_speech(
                     use_alignment, tmpdir,
                 )
                 if voice_cloning and resolved_speaker_wav is None:
-                    seg_audio = _apply_speaker_color(seg_audio, m.get("speaker"))
+                    seg_audio = _apply_speaker_color(seg_audio, m.get("speaker"), m.get("speaker_gender"))
 
             aligned_seg = m["aligned_seg"]
             segment_details.append({
@@ -1128,6 +1229,7 @@ def text_file_to_speech(
                 "text": m["text"],
                 "speaker": m.get("speaker"),
                 "speaker_voice": m.get("speaker_voice"),
+                "speaker_gender": m.get("speaker_gender"),
                 "flite_voice": m.get("flite_voice"),
                 "speaker_wav": resolved_speaker_wav,
                 "target_sec": round(m["target_sec"], 3),

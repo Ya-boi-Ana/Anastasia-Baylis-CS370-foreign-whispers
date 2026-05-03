@@ -55,6 +55,8 @@ def _cached_audio_is_current(
             speaker_segments = [segment for segment in segments if segment.get("speaker")]
             if speaker_segments and any(not segment.get("speaker_voice") for segment in speaker_segments):
                 return False
+            if speaker_segments and any(not segment.get("speaker_gender") for segment in speaker_segments):
+                return False
 
     return True
 

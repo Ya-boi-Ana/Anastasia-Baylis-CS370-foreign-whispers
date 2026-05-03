@@ -447,6 +447,41 @@ def test_speaker_color_gives_different_speakers_different_audio():
     assert speaker_a.raw_data != speaker_b.raw_data
 
 
+def test_speaker_gender_uses_reference_pitch(tmp_path, monkeypatch):
+    import numpy as np
+    from api.src.services import tts_engine
+
+    speakers = tmp_path / "speakers" / "es"
+    speakers.mkdir(parents=True)
+    ref = speakers / "Video__SPEAKER_00.wav"
+    ref.write_bytes(b"RIFF" + b"x" * 100)
+
+    monkeypatch.setattr(tts_engine.librosa, "load", lambda *args, **kwargs: (np.ones(16000), 16000))
+    monkeypatch.setattr(
+        tts_engine.librosa,
+        "pyin",
+        lambda *args, **kwargs: (np.array([120.0, 130.0, np.nan, 125.0]), None, None),
+    )
+
+    assert tts_engine._speaker_gender(tmp_path / "speakers", "es", "Video__SPEAKER_00") == "male"
+
+    tts_engine._estimate_reference_gender_cached.cache_clear()
+    monkeypatch.setattr(
+        tts_engine.librosa,
+        "pyin",
+        lambda *args, **kwargs: (np.array([210.0, 220.0, np.nan, 230.0]), None, None),
+    )
+
+    assert tts_engine._speaker_gender(tmp_path / "speakers", "es", "Video__SPEAKER_00") == "female"
+
+
+def test_speaker_voice_id_records_gender():
+    from api.src.services.tts_engine import _speaker_voice_id
+
+    assert _speaker_voice_id("Video__SPEAKER_00", "male").startswith("male-speaker-profile-")
+    assert _speaker_voice_id("Video__SPEAKER_00", "female").startswith("female-speaker-profile-")
+
+
 def test_text_file_to_speech_uses_explicit_speaker_wav(tmp_path):
     from api.src.services.tts_engine import text_file_to_speech
 
