@@ -44,6 +44,7 @@ _TTS_CONNECT_TIMEOUT = float(os.getenv("FW_TTS_CONNECT_TIMEOUT", "5"))
 _TTS_READ_TIMEOUT = float(os.getenv("FW_TTS_READ_TIMEOUT", "180"))
 _TTS_RETRIES = int(os.getenv("FW_TTS_RETRIES", "3"))
 _TTS_RETRY_BACKOFF_SEC = float(os.getenv("FW_TTS_RETRY_BACKOFF_SEC", "1.5"))
+_TTS_CHUNK_CHARS = int(os.getenv("FW_TTS_CHUNK_CHARS", "260"))
 _MAX_CONSECUTIVE_TTS_FAILURES = int(os.getenv("FW_TTS_MAX_CONSECUTIVE_FAILURES", "5"))
 _TTS_FAIL_FAST = os.getenv("FW_TTS_FAIL_FAST", "false").lower() in {
     "1",
@@ -53,7 +54,7 @@ _TTS_FAIL_FAST = os.getenv("FW_TTS_FAIL_FAST", "false").lower() in {
 }
 _TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "2")))
 _TTS_LONG_FORM_GROUP_THRESHOLD = int(os.getenv("FW_TTS_LONG_FORM_GROUP_THRESHOLD", "500"))
-_TTS_LONG_FORM_MAX_NEW_GROUPS = int(os.getenv("FW_TTS_LONG_FORM_MAX_NEW_GROUPS", "200"))
+_TTS_LONG_FORM_GROUP_SEC = float(os.getenv("FW_TTS_LONG_FORM_GROUP_SEC", "45"))
 _SYNTH_CACHE_VERSION = "v2"
 _EXTRACT_SEGMENT_VOICE_REFS = os.getenv("FW_TTS_EXTRACT_SEGMENT_VOICE_REFS", "false").lower() in {
     "1",
@@ -94,7 +95,7 @@ class ChatterboxClient:
         /v1/audio/speech/upload endpoint with the reference WAV for voice cloning.
         Otherwise uses /v1/audio/speech with the server's default voice.
         """
-        chunks = self._split_text(text) if len(text) > 200 else [text]
+        chunks = self._split_text(text) if len(text) > _TTS_CHUNK_CHARS else [text]
         wav_parts = []
 
         speaker_wav = kwargs.get("speaker_wav", self.speaker_wav)
@@ -197,7 +198,7 @@ class ChatterboxClient:
                 file_obj.seek(0)
 
     @staticmethod
-    def _split_text(text: str, max_len: int = 200) -> list[str]:
+    def _split_text(text: str, max_len: int = _TTS_CHUNK_CHARS) -> list[str]:
         """Split text at sentence boundaries to stay under max_len chars."""
         import re
         sentences = re.split(r'(?<=[.!?])\s+', text)
@@ -508,7 +509,13 @@ def _effective_segment_end(segments: list[dict], index: int) -> float:
     return max(end, start + _MIN_SEGMENT_TARGET_SEC)
 
 
-def _group_segment_metas(seg_metas: list[dict]) -> list[dict]:
+def _group_segment_metas(
+    seg_metas: list[dict],
+    *,
+    max_duration_s: float = _MAX_SYNTH_GROUP_SEC,
+    max_gap_s: float = 0.6,
+    flush_on_sentence: bool = True,
+) -> list[dict]:
     """Combine adjacent caption fragments into more natural TTS phrases."""
     groups: list[dict] = []
     current: dict | None = None
@@ -534,7 +541,7 @@ def _group_segment_metas(seg_metas: list[dict]) -> list[dict]:
             gap = float(meta["start"]) - float(current["end"])
             combined_duration = float(meta["end"]) - float(current["start"])
             speaker_changed = meta.get("speaker") != current.get("speaker")
-            if gap > 0.6 or combined_duration > _MAX_SYNTH_GROUP_SEC or speaker_changed:
+            if gap > max_gap_s or combined_duration > max_duration_s or speaker_changed:
                 flush()
                 current = {
                     **meta,
@@ -546,7 +553,7 @@ def _group_segment_metas(seg_metas: list[dict]) -> list[dict]:
                 current["target_sec"] = current["end"] - current["start"]
                 current["source_indices"].append(meta["index"])
 
-        if text.endswith((".", "?", "!", "…")):
+        if flush_on_sentence and text.endswith((".", "?", "!", "…")):
             flush()
 
     flush()
@@ -883,12 +890,13 @@ def text_file_to_speech(
         })
 
     synth_metas = _group_segment_metas(seg_metas)
-    long_form_cap = (
-        _TTS_LONG_FORM_MAX_NEW_GROUPS
-        if _TTS_LONG_FORM_GROUP_THRESHOLD > 0
-        and len(synth_metas) > _TTS_LONG_FORM_GROUP_THRESHOLD
-        else 0
-    )
+    if _TTS_LONG_FORM_GROUP_THRESHOLD > 0 and len(synth_metas) > _TTS_LONG_FORM_GROUP_THRESHOLD:
+        synth_metas = _group_segment_metas(
+            seg_metas,
+            max_duration_s=max(_MAX_SYNTH_GROUP_SEC, _TTS_LONG_FORM_GROUP_SEC),
+            max_gap_s=3.0,
+            flush_on_sentence=False,
+        )
 
     # ── Phase 1: GPU synthesis (concurrent) ───────────────────────────
     # Submit all TTS calls to a thread pool so the GPU stays busy while
@@ -936,7 +944,6 @@ def text_file_to_speech(
         speaker_by_index: dict[int, str | None] = {}
         if not use_synced_helper:
             pending_synth: list[dict] = []
-            skipped_by_cap_count = 0
             for m in synth_metas:
                 i = m["index"]
                 resolved_speaker_wav = _speaker_reference(m)
@@ -948,11 +955,6 @@ def text_file_to_speech(
                     raw_by_index[i] = raw_bytes
                     continue
 
-                if long_form_cap and len(pending_synth) >= long_form_cap:
-                    raw_by_index[i] = None
-                    skipped_by_cap_count += 1
-                    continue
-
                 pending_synth.append({
                     "index": i,
                     "text": m["text"],
@@ -962,12 +964,6 @@ def text_file_to_speech(
                 })
 
             synth_count = len(pending_synth)
-            if skipped_by_cap_count:
-                print(
-                    f" (long-form cap: synthesizing {synth_count} new groups, "
-                    f"using timed silence for {skipped_by_cap_count})",
-                    end="",
-                )
             raw_by_index.update(_synthesize_pending_raw(engine, pending_synth))
 
         for m in synth_metas:

@@ -438,12 +438,12 @@ def test_text_file_to_speech_reuses_raw_phrase_cache(tmp_path):
     assert calls["count"] == 1
 
 
-def test_text_file_to_speech_caps_new_synthesis_for_long_form(tmp_path, monkeypatch):
+def test_text_file_to_speech_groups_long_form_without_silence_cap(tmp_path, monkeypatch):
     from api.src.services import tts_engine
     from api.src.services.tts_engine import text_file_to_speech
 
     monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_GROUP_THRESHOLD", 2)
-    monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_MAX_NEW_GROUPS", 1)
+    monkeypatch.setattr(tts_engine, "_TTS_LONG_FORM_GROUP_SEC", 3.0)
 
     es_dir = tmp_path / "translations" / "argos"
     es_dir.mkdir(parents=True)
