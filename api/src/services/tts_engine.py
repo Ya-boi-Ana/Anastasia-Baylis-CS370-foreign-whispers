@@ -566,18 +566,41 @@ def _apply_speaker_color(audio: AudioSegment, speaker: str | None) -> AudioSegme
         return audio
 
     digest = int(hashlib.sha256(speaker.encode("utf-8")).hexdigest()[:8], 16)
-    profile = digest % 6
+    profile = digest % 8
+    original_ms = len(audio)
+    pitch_steps = [-2, 2, -3, 3, -1, 1, -4, 4][profile]
+    pitched = _shift_audio_pitch(audio, pitch_steps)
+
     if profile == 0:
-        return audio.high_pass_filter(140).apply_gain(0.8)
-    if profile == 1:
-        return audio.low_pass_filter(3400).apply_gain(-0.8)
-    if profile == 2:
-        return audio.high_pass_filter(220).low_pass_filter(4300).apply_gain(1.2)
-    if profile == 3:
-        return audio.low_pass_filter(2800).apply_gain(0.4)
-    if profile == 4:
-        return audio.high_pass_filter(100).apply_gain(-1.1)
-    return audio.high_pass_filter(180).low_pass_filter(3600)
+        colored = pitched.high_pass_filter(170).apply_gain(0.8)
+    elif profile == 1:
+        colored = pitched.low_pass_filter(3100).apply_gain(-0.8)
+    elif profile == 2:
+        colored = pitched.high_pass_filter(230).low_pass_filter(4300).apply_gain(1.2)
+    elif profile == 3:
+        colored = pitched.low_pass_filter(2600).apply_gain(0.4)
+    elif profile == 4:
+        colored = pitched.high_pass_filter(110).apply_gain(-1.1)
+    elif profile == 5:
+        colored = pitched.high_pass_filter(180).low_pass_filter(3600)
+    elif profile == 6:
+        colored = pitched.low_pass_filter(2400).apply_gain(-1.6)
+    else:
+        colored = pitched.high_pass_filter(260).apply_gain(1.5)
+
+    if len(colored) < original_ms:
+        colored += AudioSegment.silent(duration=original_ms - len(colored))
+    return colored[:original_ms]
+
+
+def _shift_audio_pitch(audio: AudioSegment, semitones: float) -> AudioSegment:
+    """Pitch-shift an AudioSegment while returning the original sample rate."""
+    if semitones == 0 or len(audio) == 0:
+        return audio
+    shifted_rate = int(audio.frame_rate * (2.0 ** (semitones / 12.0)))
+    if shifted_rate <= 0:
+        return audio
+    return audio._spawn(audio.raw_data, overrides={"frame_rate": shifted_rate}).set_frame_rate(audio.frame_rate)
 
 
 def _postprocess_segment(

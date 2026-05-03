@@ -365,13 +365,26 @@ def test_text_file_to_speech_does_not_auto_upload_resolved_refs_by_default(tmp_p
 
 
 def test_speaker_color_preserves_duration():
+    import math
+    import struct
     from pydub import AudioSegment
     from api.src.services.tts_engine import _apply_speaker_color
 
-    audio = AudioSegment.silent(duration=750)
+    sample_rate = 16000
+    samples = bytearray()
+    for i in range(sample_rate):
+        value = int(12000 * math.sin(2 * math.pi * 220 * (i / sample_rate)))
+        samples.extend(struct.pack("<h", value))
+    audio = AudioSegment(
+        bytes(samples),
+        frame_rate=sample_rate,
+        sample_width=2,
+        channels=1,
+    )
     colored = _apply_speaker_color(audio, "SPEAKER_00")
 
     assert len(colored) == len(audio)
+    assert colored.raw_data != audio.raw_data
 
 
 def test_text_file_to_speech_uses_explicit_speaker_wav(tmp_path):
