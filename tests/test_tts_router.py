@@ -232,3 +232,26 @@ def test_cached_audio_without_speaker_refs_is_current_for_safe_diarized_tts(tmp_
 
     assert _cached_audio_is_current(wav) is True
     assert _cached_audio_is_current(wav, require_speaker_wav=True) is False
+    assert _cached_audio_is_current(wav, require_speaker_profiles=True) is False
+
+
+def test_cached_audio_with_speaker_profiles_is_current_for_diarized_tts(tmp_path):
+    """Diarized safe TTS cache is reusable once speaker profiles are recorded."""
+    from api.src.routers.tts import _cached_audio_is_current
+
+    wav = tmp_path / "Test Title.wav"
+    wav.write_bytes(b"RIFF")
+    wav.with_suffix(".align.json").write_text(json.dumps({
+        "timing_model": "non_overlapping_phrase_groups_v1",
+        "segments": [
+            {
+                "speaker": "SPEAKER_00",
+                "speaker_voice": "speaker-profile-01",
+                "speaker_wav": None,
+                "raw_duration_s": 1.0,
+                "speed_factor": 1.0,
+            },
+        ],
+    }))
+
+    assert _cached_audio_is_current(wav, require_speaker_profiles=True) is True

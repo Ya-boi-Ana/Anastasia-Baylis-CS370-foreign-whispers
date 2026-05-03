@@ -421,6 +421,32 @@ def test_speaker_color_preserves_duration():
     assert colored.raw_data != audio.raw_data
 
 
+def test_speaker_color_gives_different_speakers_different_audio():
+    import math
+    import struct
+    from pydub import AudioSegment
+    from api.src.services.tts_engine import _apply_speaker_color
+
+    sample_rate = 16000
+    samples = bytearray()
+    for i in range(sample_rate):
+        value = int(12000 * math.sin(2 * math.pi * 220 * (i / sample_rate)))
+        samples.extend(struct.pack("<h", value))
+    audio = AudioSegment(
+        bytes(samples),
+        frame_rate=sample_rate,
+        sample_width=2,
+        channels=1,
+    )
+
+    speaker_a = _apply_speaker_color(audio, "Video__SPEAKER_00")
+    speaker_b = _apply_speaker_color(audio, "Video__SPEAKER_01")
+
+    assert len(speaker_a) == len(audio)
+    assert len(speaker_b) == len(audio)
+    assert speaker_a.raw_data != speaker_b.raw_data
+
+
 def test_text_file_to_speech_uses_explicit_speaker_wav(tmp_path):
     from api.src.services.tts_engine import text_file_to_speech
 
@@ -644,6 +670,41 @@ def test_parallel_raw_synthesis_serializes_voice_uploads(tmp_path):
 
     assert sorted(results) == [0, 1]
     assert all(results.values())
+
+
+def test_flite_raw_synthesis_uses_speaker_specific_voice(tmp_path):
+    from api.src.services.tts_engine import _flite_voice_for_speaker, _synthesize_raw
+
+    calls = []
+    speakers = [f"Video__SPEAKER_{i:02d}" for i in range(12)]
+    speaker_a = speakers[0]
+    speaker_b = next(
+        speaker for speaker in speakers[1:]
+        if _flite_voice_for_speaker(speaker) != _flite_voice_for_speaker(speaker_a)
+    )
+
+    class FfmpegFliteTTSEngine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            calls.append(kwargs.get("flite_voice"))
+            from pydub import AudioSegment
+            AudioSegment.silent(duration=100).export(file_path, format="wav")
+
+    raw_a = _synthesize_raw(
+        FfmpegFliteTTSEngine(),
+        "Hola",
+        str(tmp_path / "a.wav"),
+        speaker=speaker_a,
+    )
+    raw_b = _synthesize_raw(
+        FfmpegFliteTTSEngine(),
+        "Hola",
+        str(tmp_path / "b.wav"),
+        speaker=speaker_b,
+    )
+
+    assert raw_a
+    assert raw_b
+    assert calls[0] != calls[1]
 
 
 def test_chatterbox_ignores_empty_speaker_wav(tmp_path, monkeypatch):

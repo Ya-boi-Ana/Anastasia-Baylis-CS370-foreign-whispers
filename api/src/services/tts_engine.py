@@ -57,7 +57,12 @@ _TTS_CONCURRENCY = max(1, int(os.getenv("FW_TTS_CONCURRENCY", "1")))
 _TTS_LONG_FORM_GROUP_THRESHOLD = int(os.getenv("FW_TTS_LONG_FORM_GROUP_THRESHOLD", "500"))
 _TTS_LONG_FORM_GROUP_SEC = float(os.getenv("FW_TTS_LONG_FORM_GROUP_SEC", "45"))
 _TTS_LONG_FORM_ENGINE = os.getenv("FW_TTS_LONG_FORM_ENGINE", "flite").lower()
-_SYNTH_CACHE_VERSION = "v2"
+_SYNTH_CACHE_VERSION = "v3"
+_FLITE_VOICES = tuple(
+    voice.strip()
+    for voice in os.getenv("FW_TTS_FLITE_VOICES", "kal,slt,awb,rms").split(",")
+    if voice.strip()
+) or ("kal",)
 _EXTRACT_SEGMENT_VOICE_REFS = os.getenv("FW_TTS_EXTRACT_SEGMENT_VOICE_REFS", "false").lower() in {
     "1",
     "true",
@@ -249,23 +254,26 @@ class FfmpegFliteTTSEngine:
         with tempfile.TemporaryDirectory() as tmpdir:
             text_path = pathlib.Path(tmpdir) / "speech.txt"
             text_path.write_text(text.strip() or " ", encoding="utf-8")
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    f"flite=textfile={text_path}:voice={voice}",
-                    "-ar",
-                    "16000",
-                    "-ac",
-                    "1",
-                    str(output),
-                ],
-                check=True,
-                capture_output=True,
-            )
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"flite=textfile={text_path}:voice={voice}",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                str(output),
+            ]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True)
+            except subprocess.CalledProcessError:
+                if voice == "kal":
+                    raise
+                cmd[5] = f"flite=textfile={text_path}:voice=kal"
+                subprocess.run(cmd, check=True, capture_output=True)
 
 
 def _make_tts_engine():
@@ -356,7 +364,13 @@ def files_from_dir(dir_path) -> list:
     return es_files
 
 
-def _synthesize_raw(tts_engine, text: str, wav_path: str, speaker_wav: str | None = None) -> bytes | None:
+def _synthesize_raw(
+    tts_engine,
+    text: str,
+    wav_path: str,
+    speaker_wav: str | None = None,
+    speaker: str | None = None,
+) -> bytes | None:
     """GPU-bound: call TTS engine and return raw WAV bytes, or None on failure."""
     if not text or not text.strip():
         return None
@@ -364,6 +378,9 @@ def _synthesize_raw(tts_engine, text: str, wav_path: str, speaker_wav: str | Non
         kwargs = {}
         if speaker_wav:
             kwargs["speaker_wav"] = speaker_wav
+        flite_voice = _flite_voice_for_speaker(speaker)
+        if flite_voice and tts_engine.__class__.__name__ == "FfmpegFliteTTSEngine":
+            kwargs["flite_voice"] = flite_voice
         tts_engine.tts_to_file(text=text, file_path=wav_path, **kwargs)
         return pathlib.Path(wav_path).read_bytes()
     except TypeError:
@@ -389,6 +406,8 @@ def _synth_cache_key(m: dict, speaker_wav: str | None, use_alignment: bool) -> s
         "target_sec": round(float(m.get("target_sec", 0.0)), 3),
         "stretch_factor": round(float(m.get("stretch_factor", 1.0)), 3),
         "alignment": bool(use_alignment),
+        "speaker_voice": m.get("speaker_voice") or "",
+        "flite_voice": m.get("flite_voice") or "",
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:24]
@@ -439,6 +458,7 @@ def _synthesize_pending_raw(
                     item["text"],
                     item["wav_path"],
                     speaker_wav=item["speaker_wav"],
+                    speaker=item.get("speaker"),
                 )
             except Exception as exc:
                 print(f"[tts] TTS failed for segment ({exc}), using silence")
@@ -464,6 +484,7 @@ def _synthesize_pending_raw(
                 item["text"],
                 item["wav_path"],
                 speaker_wav=item["speaker_wav"],
+                speaker=item.get("speaker"),
             ): item
             for item in pending
         }
@@ -605,32 +626,56 @@ def _apply_speaker_color(audio: AudioSegment, speaker: str | None) -> AudioSegme
     if not _SPEAKER_COLORING or not speaker:
         return audio
 
-    digest = int(hashlib.sha256(speaker.encode("utf-8")).hexdigest()[:8], 16)
-    profile = digest % 8
+    profile = _speaker_profile(speaker)
     original_ms = len(audio)
-    pitch_steps = [-2, 2, -3, 3, -1, 1, -4, 4][profile]
+    pitch_steps = [-4.5, 4.5, -3.5, 3.5, -2.5, 2.5, -1.5, 1.5, -5.5, 5.5, -0.8, 0.8][profile]
     pitched = _shift_audio_pitch(audio, pitch_steps)
 
     if profile == 0:
-        colored = pitched.high_pass_filter(170).apply_gain(0.8)
+        colored = pitched.high_pass_filter(220).apply_gain(1.0)
     elif profile == 1:
-        colored = pitched.low_pass_filter(3100).apply_gain(-0.8)
+        colored = pitched.low_pass_filter(2600).apply_gain(-1.0)
     elif profile == 2:
-        colored = pitched.high_pass_filter(230).low_pass_filter(4300).apply_gain(1.2)
+        colored = pitched.high_pass_filter(280).low_pass_filter(4500).apply_gain(1.4)
     elif profile == 3:
-        colored = pitched.low_pass_filter(2600).apply_gain(0.4)
+        colored = pitched.low_pass_filter(2200).apply_gain(0.6)
     elif profile == 4:
-        colored = pitched.high_pass_filter(110).apply_gain(-1.1)
+        colored = pitched.high_pass_filter(130).low_pass_filter(3800).apply_gain(-1.4)
     elif profile == 5:
-        colored = pitched.high_pass_filter(180).low_pass_filter(3600)
+        colored = pitched.high_pass_filter(190).low_pass_filter(3400)
     elif profile == 6:
-        colored = pitched.low_pass_filter(2400).apply_gain(-1.6)
+        colored = pitched.low_pass_filter(2100).apply_gain(-1.8)
+    elif profile == 7:
+        colored = pitched.high_pass_filter(300).apply_gain(1.7)
+    elif profile == 8:
+        colored = pitched.low_pass_filter(1800).apply_gain(-2.0)
+    elif profile == 9:
+        colored = pitched.high_pass_filter(340).low_pass_filter(5000).apply_gain(2.0)
+    elif profile == 10:
+        colored = pitched.high_pass_filter(90).low_pass_filter(2900).apply_gain(-0.4)
     else:
-        colored = pitched.high_pass_filter(260).apply_gain(1.5)
+        colored = pitched.high_pass_filter(250).low_pass_filter(4200).apply_gain(0.9)
 
     if len(colored) < original_ms:
         colored += AudioSegment.silent(duration=original_ms - len(colored))
     return colored[:original_ms]
+
+
+def _speaker_profile(speaker: str | None) -> int:
+    if not speaker:
+        return 0
+    digest = int(hashlib.sha256(speaker.encode("utf-8")).hexdigest()[:8], 16)
+    return digest % 12
+
+
+def _speaker_voice_id(speaker: str | None) -> str:
+    return f"speaker-profile-{_speaker_profile(speaker):02d}" if speaker else ""
+
+
+def _flite_voice_for_speaker(speaker: str | None) -> str | None:
+    if not speaker or not _FLITE_VOICES:
+        return None
+    return _FLITE_VOICES[_speaker_profile(speaker) % len(_FLITE_VOICES)]
 
 
 def _shift_audio_pitch(audio: AudioSegment, semitones: float) -> AudioSegment:
@@ -1018,6 +1063,12 @@ def text_file_to_speech(
                 resolved_speaker_wav = _speaker_reference(m)
                 speaker_by_index[i] = resolved_speaker_wav
                 m["tts_engine"] = engine.__class__.__name__
+                m["speaker_voice"] = _speaker_voice_id(m.get("speaker")) if voice_cloning else ""
+                m["flite_voice"] = (
+                    _flite_voice_for_speaker(m.get("speaker"))
+                    if voice_cloning and engine.__class__.__name__ == "FfmpegFliteTTSEngine"
+                    else ""
+                )
                 cache_path = cache_dir / f"{_synth_cache_key(m, resolved_speaker_wav, use_alignment)}.wav"
                 raw_bytes = _read_cached_raw(cache_path)
                 if raw_bytes is not None:
@@ -1028,6 +1079,7 @@ def text_file_to_speech(
                 pending_synth.append({
                     "index": i,
                     "text": m["text"],
+                    "speaker": m.get("speaker"),
                     "speaker_wav": resolved_speaker_wav,
                     "wav_path": str(pathlib.Path(synth_dir) / f"seg_{i}.wav"),
                     "cache_path": cache_path,
@@ -1075,6 +1127,8 @@ def text_file_to_speech(
                 "source_indices": m.get("source_indices", [i]),
                 "text": m["text"],
                 "speaker": m.get("speaker"),
+                "speaker_voice": m.get("speaker_voice"),
+                "flite_voice": m.get("flite_voice"),
                 "speaker_wav": resolved_speaker_wav,
                 "target_sec": round(m["target_sec"], 3),
                 "stretch_factor": round(m["stretch_factor"], 3),
