@@ -258,3 +258,53 @@ def test_diarize_endpoint_chunks_videos_above_duration_limit(tmp_path, monkeypat
     assert [segment.start_s for segment in response.segments] == [1.0, 61.0, 121.0]
     assert any(name.endswith(".chunk0000.wav") for name in ffmpeg_outputs)
     assert (data_dir / "diarizations" / "Demo.json").exists()
+
+
+def test_diarize_endpoint_uses_single_audio_for_short_videos(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    import api.src.routers.diarize as mod
+
+    data_dir = tmp_path / "api"
+    videos = data_dir / "videos"
+    videos.mkdir(parents=True)
+    (videos / "Short.mp4").write_bytes(b"video")
+    transcriptions = data_dir / "transcriptions" / "whisper"
+    translations = data_dir / "translations" / "argos"
+    transcriptions.mkdir(parents=True)
+    translations.mkdir(parents=True)
+    payload = {"segments": [{"start": 0.0, "end": 5.0, "text": "A"}]}
+    (transcriptions / "Short.json").write_text(json.dumps(payload))
+    (translations / "Short.json").write_text(json.dumps(payload))
+
+    ffmpeg_outputs = []
+
+    def fake_run(cmd, **kwargs):
+        from pathlib import Path
+        output = Path(cmd[-1])
+        ffmpeg_outputs.append(output.name)
+        output.write_bytes(b"RIFF" + b"\0" * 100)
+
+    async def fake_extract_refs(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mod.settings, "data_dir", data_dir)
+    monkeypatch.setattr(mod.settings, "diarization_max_seconds", 600.0)
+    monkeypatch.setattr(mod, "resolve_title", lambda video_id: "Short")
+    monkeypatch.setattr(mod, "_probe_media_duration_seconds", lambda path: 120.0)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "_extract_speaker_references", fake_extract_refs)
+    monkeypatch.setattr(
+        mod._alignment_service,
+        "diarize",
+        lambda path: [{"start_s": 1.0, "end_s": 2.0, "speaker": "SPEAKER_00"}],
+    )
+
+    response = asyncio.run(mod.diarize_endpoint("short-id"))
+
+    assert response.skipped is False
+    assert response.speakers == ["SPEAKER_00"]
+    assert [segment.start_s for segment in response.segments] == [1.0]
+    assert ffmpeg_outputs == ["Short.wav"]
+    saved = json.loads((data_dir / "translations" / "argos" / "Short.json").read_text())
+    assert saved["segments"][0]["speaker"] == "Short__SPEAKER_00"
