@@ -94,7 +94,7 @@ async def tts_endpoint(
 
     wants_voice_cloning = voice_cloning or speaker_wav is not None
 
-    require_speaker_wav = speaker_wav is not None
+    require_speaker_wav = wants_voice_cloning
     require_speaker_profiles = voice_cloning and speaker_wav is None
 
     if wav_path.exists() and _cached_audio_is_current(

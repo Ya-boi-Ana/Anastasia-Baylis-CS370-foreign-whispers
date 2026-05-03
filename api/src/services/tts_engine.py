@@ -1134,7 +1134,7 @@ def text_file_to_speech(
                 return None
             if speaker_wav:
                 return speaker_wav
-            if not (_AUTO_VOICE_CLONING or _MATCH_SPEAKER_REFS):
+            if not m.get("speaker"):
                 return None
             try:
                 return resolve_speaker_wav(speakers_base, target_language, m.get("speaker"))

@@ -334,8 +334,8 @@ def test_text_file_to_speech_does_not_extract_segment_refs_by_default(tmp_path):
     assert speaker_wavs == [None]
 
 
-def test_text_file_to_speech_does_not_auto_upload_speaker_refs_by_default(tmp_path):
-    """Diarized voice cloning should stay on the stable default endpoint by default."""
+def test_text_file_to_speech_uploads_speaker_refs_by_default(tmp_path):
+    """Diarized voice cloning should use per-speaker refs when they are available."""
     from api.src.services.tts_engine import text_file_to_speech
 
     es_dir = tmp_path / "translations" / "argos"
@@ -359,6 +359,36 @@ def test_text_file_to_speech_does_not_auto_upload_speaker_refs_by_default(tmp_pa
             AudioSegment.silent(duration=500).export(file_path, format="wav")
 
     with patch("api.src.services.tts_engine.resolve_speaker_wav", return_value="es/SPEAKER_00.wav"):
+        text_file_to_speech(str(es_path), str(out_dir), tts_engine=Engine(), voice_cloning=True)
+
+    assert speaker_wavs == ["es/SPEAKER_00.wav"]
+
+
+def test_text_file_to_speech_falls_back_without_speaker_refs(tmp_path):
+    """Missing speaker refs still synthesize through the default endpoint."""
+    from api.src.services.tts_engine import text_file_to_speech
+
+    es_dir = tmp_path / "translations" / "argos"
+    es_dir.mkdir(parents=True)
+    title = "voice_ref_missing"
+    es_path = es_dir / f"{title}.json"
+    es_path.write_text(json.dumps({
+        "language": "es",
+        "text": "Hola",
+        "segments": [{"start": 0.0, "end": 1.0, "text": "Hola", "speaker": "SPEAKER_00"}],
+    }))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    speaker_wavs = []
+
+    class Engine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            speaker_wavs.append(kwargs.get("speaker_wav"))
+            from pydub import AudioSegment
+            AudioSegment.silent(duration=500).export(file_path, format="wav")
+
+    with patch("api.src.services.tts_engine.resolve_speaker_wav", side_effect=FileNotFoundError):
         text_file_to_speech(str(es_path), str(out_dir), tts_engine=Engine(), voice_cloning=True)
 
     assert speaker_wavs == [None]
@@ -514,6 +544,40 @@ def test_text_file_to_speech_uses_explicit_speaker_wav(tmp_path):
     )
 
     assert speaker_wavs == ["es/SPEAKER_00.wav"]
+
+
+def test_text_file_to_speech_uses_diarized_speaker_refs_by_default(tmp_path, monkeypatch):
+    from api.src.services import tts_engine
+    from api.src.services.tts_engine import text_file_to_speech
+
+    es_dir = tmp_path / "translations" / "argos"
+    es_dir.mkdir(parents=True)
+    title = "speaker_ref_voice"
+    speaker = f"{title}__SPEAKER_00"
+    es_path = es_dir / f"{title}.json"
+    es_path.write_text(json.dumps({
+        "language": "es",
+        "text": "Hola",
+        "segments": [{"start": 0.0, "end": 1.0, "text": "Hola", "speaker": speaker}],
+    }))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    monkeypatch.setattr(tts_engine, "_AUTO_VOICE_CLONING", False)
+    monkeypatch.setattr(tts_engine, "_MATCH_SPEAKER_REFS", False)
+    monkeypatch.setattr(tts_engine, "resolve_speaker_wav", lambda *args: f"es/{speaker}.wav")
+
+    speaker_wavs = []
+
+    class Engine:
+        def tts_to_file(self, text, file_path, **kwargs):
+            speaker_wavs.append(kwargs.get("speaker_wav"))
+            from pydub import AudioSegment
+            AudioSegment.silent(duration=500).export(file_path, format="wav")
+
+    text_file_to_speech(str(es_path), str(out_dir), tts_engine=Engine(), voice_cloning=True)
+
+    assert speaker_wavs == [f"es/{speaker}.wav"]
 
 
 def test_text_file_to_speech_reuses_raw_phrase_cache(tmp_path):

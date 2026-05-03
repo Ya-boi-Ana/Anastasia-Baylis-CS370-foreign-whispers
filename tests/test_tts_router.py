@@ -217,8 +217,8 @@ def test_cached_audio_with_many_silent_fallbacks_is_not_current(tmp_path):
     assert _cached_audio_is_current(wav) is False
 
 
-def test_cached_audio_without_speaker_refs_is_current_for_safe_diarized_tts(tmp_path):
-    """Safe diarized TTS uses speaker coloring, not uploaded speaker refs."""
+def test_cached_audio_without_speaker_refs_is_not_current_for_diarized_voice_cloning(tmp_path):
+    """Diarized voice cloning should regenerate legacy audio that used only profiles."""
     from api.src.routers.tts import _cached_audio_is_current
 
     wav = tmp_path / "Test Title.wav"
@@ -235,8 +235,8 @@ def test_cached_audio_without_speaker_refs_is_current_for_safe_diarized_tts(tmp_
     assert _cached_audio_is_current(wav, require_speaker_profiles=True) is False
 
 
-def test_cached_audio_with_speaker_profiles_is_current_for_diarized_tts(tmp_path):
-    """Diarized safe TTS cache is reusable once speaker profiles are recorded."""
+def test_cached_audio_with_speaker_profiles_still_needs_refs_for_voice_cloning(tmp_path):
+    """Profile-only sidecars are stale when the user requests cloned speaker voices."""
     from api.src.routers.tts import _cached_audio_is_current
 
     wav = tmp_path / "Test Title.wav"
@@ -256,3 +256,30 @@ def test_cached_audio_with_speaker_profiles_is_current_for_diarized_tts(tmp_path
     }))
 
     assert _cached_audio_is_current(wav, require_speaker_profiles=True) is True
+    assert _cached_audio_is_current(wav, require_speaker_wav=True) is False
+
+
+def test_cached_audio_with_speaker_refs_is_current_for_diarized_voice_cloning(tmp_path):
+    from api.src.routers.tts import _cached_audio_is_current
+
+    wav = tmp_path / "Test Title.wav"
+    wav.write_bytes(b"RIFF")
+    wav.with_suffix(".align.json").write_text(json.dumps({
+        "timing_model": "non_overlapping_phrase_groups_v1",
+        "segments": [
+            {
+                "speaker": "SPEAKER_00",
+                "speaker_voice": "male-speaker-profile-00",
+                "speaker_gender": "male",
+                "speaker_wav": "es/SPEAKER_00.wav",
+                "raw_duration_s": 1.0,
+                "speed_factor": 1.0,
+            },
+        ],
+    }))
+
+    assert _cached_audio_is_current(
+        wav,
+        require_speaker_wav=True,
+        require_speaker_profiles=True,
+    ) is True
