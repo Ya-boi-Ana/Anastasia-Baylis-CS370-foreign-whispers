@@ -308,3 +308,38 @@ def test_diarize_endpoint_uses_single_audio_for_short_videos(tmp_path, monkeypat
     assert ffmpeg_outputs == ["Short.wav"]
     saved = json.loads((data_dir / "translations" / "argos" / "Short.json").read_text())
     assert saved["segments"][0]["speaker"] == "Short__SPEAKER_00"
+
+
+def test_diarize_endpoint_cached_segments_are_not_reported_skipped(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    import api.src.routers.diarize as mod
+
+    data_dir = tmp_path / "api"
+    diarizations = data_dir / "diarizations"
+    transcriptions = data_dir / "transcriptions" / "whisper"
+    translations = data_dir / "translations" / "argos"
+    diarizations.mkdir(parents=True)
+    transcriptions.mkdir(parents=True)
+    translations.mkdir(parents=True)
+    payload = {"segments": [{"start": 0.0, "end": 5.0, "text": "A"}]}
+    (transcriptions / "Cached.json").write_text(json.dumps(payload))
+    (translations / "Cached.json").write_text(json.dumps(payload))
+    (diarizations / "Cached.json").write_text(json.dumps({
+        "speakers": ["SPEAKER_00"],
+        "segments": [{"start_s": 1.0, "end_s": 2.0, "speaker": "SPEAKER_00"}],
+    }))
+
+    async def fake_extract_refs(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mod.settings, "data_dir", data_dir)
+    monkeypatch.setattr(mod, "resolve_title", lambda video_id: "Cached")
+    monkeypatch.setattr(mod, "_extract_speaker_references", fake_extract_refs)
+
+    response = asyncio.run(mod.diarize_endpoint("cached-id"))
+
+    assert response.skipped is False
+    assert response.speakers == ["SPEAKER_00"]
+    saved = json.loads((data_dir / "translations" / "argos" / "Cached.json").read_text())
+    assert saved["segments"][0]["speaker"] == "Cached__SPEAKER_00"

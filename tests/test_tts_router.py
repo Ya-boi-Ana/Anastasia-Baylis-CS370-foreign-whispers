@@ -217,8 +217,8 @@ def test_cached_audio_with_many_silent_fallbacks_is_not_current(tmp_path):
     assert _cached_audio_is_current(wav) is False
 
 
-def test_cached_audio_without_speaker_refs_is_not_current_when_voice_cloning(tmp_path):
-    """Voice-cloned reruns should regenerate legacy sidecars without speaker refs."""
+def test_cached_audio_without_speaker_refs_is_current_for_safe_diarized_tts(tmp_path):
+    """Safe diarized TTS uses speaker coloring, not uploaded speaker refs."""
     from api.src.routers.tts import _cached_audio_is_current
 
     wav = tmp_path / "Test Title.wav"
@@ -230,5 +230,5 @@ def test_cached_audio_without_speaker_refs_is_not_current_when_voice_cloning(tmp
         ],
     }))
 
-    assert _cached_audio_is_current(wav, require_voice_cloning=True) is False
-    assert _cached_audio_is_current(wav, require_voice_cloning=False) is True
+    assert _cached_audio_is_current(wav) is True
+    assert _cached_audio_is_current(wav, require_speaker_wav=True) is False

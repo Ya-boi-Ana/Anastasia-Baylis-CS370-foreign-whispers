@@ -234,7 +234,6 @@ async def diarize_endpoint(video_id: str):
                 video_id=video_id,
                 speakers=data.get("speakers", []),
                 segments=diar_segments,
-                skipped=True,
             )
 
     # Extract audio from the video.
